@@ -275,7 +275,7 @@
     if (!native || !native.checkMedia || isExample) return;
     urls.forEach(u => {
       const e = mediaIdx.get(u);
-      if (!e || e.status !== 'saved' || e.online === false || e.turns || checking.has(u) || Date.now() - (e.checkedAt || 0) < WEEK) return;
+      if (!e || e.status !== 'saved' || e.online === false || e.turns || e.dupOf || checking.has(u) || Date.now() - (e.checkedAt || 0) < WEEK) return;
       checking.add(u);
       try { native.checkMedia(u, e.etag || '', e.lastMod || ''); } catch (err) { checking.delete(u); }
     });
@@ -299,25 +299,41 @@
   // ---- Duplicates: identical files (same content hash) are kept once ----
   const shown = e => e && e.dupOf ? mediaIdx.get(e.dupOf) || e : e;
   let dupTally = 0, dupLogT;
+  // Same picture = same bytes, or the same look and shape at another size (a thumbnail and the full one).
+  // The biggest copy is kept; the others point at it and their files are deleted.
+  const ham = (a, b) => { let n = 0; for (let i = 0; i < 16; i++) { let x = parseInt(a[i], 16) ^ parseInt(b[i], 16); while (x) { n += x & 1; x >>= 1; } } return n; };
+  const ratio = x => x.w && x.h ? x.w / x.h : 0;
+  const looksSame = (a, b) => !!(a.dhash && b.dhash && ratio(a) && ratio(b) && ham(a.dhash, b.dhash) <= 6 && Math.abs(ratio(a) - ratio(b)) / Math.max(ratio(a), ratio(b)) < 0.08);
+  const area = x => (x.w || 0) * (x.h || 0);
   function dedupe(e) {
-    if (!e || !e.hash || e.dupOf || e.status !== 'saved') return;
-    const o = [...mediaIdx.values()].find(x => x !== e && x.url !== e.url && x.hash === e.hash && x.status === 'saved' && !x.dupOf);
+    if (!e || e.dupOf || e.status !== 'saved' || (!e.hash && !e.dhash)) return;
+    const o = [...mediaIdx.values()].find(x => x !== e && x.url !== e.url && x.status === 'saved' && !x.dupOf && ((e.hash && x.hash === e.hash) || looksSame(e, x)));
     if (!o) return;
-    if (native && native.deleteMedia && fileOf(e) && fileOf(e) !== fileOf(o)) native.deleteMedia(fileOf(e));
-    e.dupOf = o.url; e.local = o.local;
-    dupTally++; clearTimeout(dupLogT);
-    dupLogT = setTimeout(() => { logEvent('media', `Kept one copy of ${fmt.format(dupTally)} duplicate picture${dupTally === 1 ? '' : 's'} or video${dupTally === 1 ? '' : 's'}`); dupTally = 0; }, 3000);
+    if (area(e) > area(o)) mergeInto(o, e); else mergeInto(e, o);
   }
-  // Files saved before duplicates were tracked get their hash once.
+  function mergeInto(drop, keep) {
+    if (native && native.deleteMedia && fileOf(drop) && fileOf(drop) !== fileOf(keep)) native.deleteMedia(fileOf(drop));
+    const moved = [...mediaIdx.values()].filter(x => x.dupOf === drop.url);
+    moved.forEach(x => { x.dupOf = keep.url; x.local = keep.local; });
+    const turns = (drop.turns || 0) % 4;
+    drop.dupOf = keep.url; drop.local = keep.local;
+    putAll('media', [drop, ...moved]);
+    // A thumbnail Bob already turned passes its turn on to the full-size copy.
+    if (turns && !keep.turns) setTimeout(() => rotateSaved(keep.url, turns * 90), 0);
+    dupTally++; clearTimeout(dupLogT);
+    dupLogT = setTimeout(() => { logEvent('media', `Kept one copy of ${fmt.format(dupTally)} duplicate picture${dupTally === 1 ? '' : 's'} or video${dupTally === 1 ? '' : 's'}, the largest`); dupTally = 0; }, 3000);
+  }
+  const takeInfo = (e, info) => { e.hash = info.hash || e.hash || ''; if (info.dhash) { e.dhash = info.dhash; e.w = info.w; e.h = info.h; } if (info.hash) e.infoAt = Date.now(); };
+  // Files saved before this check existed are measured once.
   function hashOld() {
     if (!native || !native.hashMedia || isExample) return;
-    const files = [...new Set([...mediaIdx.values()].filter(e => isSavedE(e) && !e.hash && !e.dupOf).map(fileOf))];
+    const files = [...new Set([...mediaIdx.values()].filter(e => isSavedE(e) && !e.infoAt && !e.dupOf).map(fileOf))];
     for (let k = 0; k < files.length; k += 100) native.hashMedia(JSON.stringify(files.slice(k, k + 100)));
   }
-  window.__tofMediaHash = (file, hash) => {
-    if (!hash) return;
-    const list = [...mediaIdx.values()].filter(e => !e.dupOf && fileOf(e) === file && !e.hash);
-    list.forEach(e => { e.hash = hash; dedupe(e); });
+  window.__tofMediaHash = (file, info) => {
+    if (!info || !info.hash) return;
+    const list = [...mediaIdx.values()].filter(e => !e.dupOf && fileOf(e) === file && !e.infoAt);
+    list.forEach(e => { takeInfo(e, info); dedupe(e); });
     if (list.length) { putAll('media', list); clearTimeout(rr); rr = setTimeout(refreshMedia, 300); }
   };
   function logMedia() {
@@ -325,7 +341,7 @@
     if (mediaTally.gone) logEvent('media', `${fmt.format(mediaTally.gone)} picture${mediaTally.gone === 1 ? '' : 's'} or video${mediaTally.gone === 1 ? '' : 's'} had already expired at TextNow`);
     mediaTally.saved = mediaTally.gone = 0;
   }
-  window.__tofMediaDone = (url, status, local, mime, size, etag, lastMod, hash) => {
+  window.__tofMediaDone = (url, status, local, mime, size, etag, lastMod, info) => {
     pendingMedia.delete(url);
     const prev = mediaIdx.get(url) || {};
     // A copy already on the phone always wins over a later failed or expired check.
@@ -334,7 +350,9 @@
     const e = { ...prev, url, status, local: local || '', mime: mime || '', size: size || 0, tries: (prev.tries || 0) + (status === 'failed' ? 1 : 0),
       savedAt: prev.status === 'saved' && prev.local === local ? prev.savedAt : Date.now(),
       etag: etag || prev.etag || '', lastMod: lastMod || prev.lastMod || '', checkedAt: fresh ? Date.now() : prev.checkedAt || 0, online: status === 'gone' ? false : fresh ? true : prev.online,
-      hash: hash || (prev.local === local ? prev.hash : '') || '', dupOf: prev.local === local ? prev.dupOf : undefined };
+      dupOf: prev.local === local ? prev.dupOf : undefined };
+    if (prev.local !== local) { delete e.hash; delete e.dhash; delete e.infoAt; }
+    if (info && typeof info === 'object') takeInfo(e, info);
     mediaIdx.set(url, e);
     if (status === 'saved') dedupe(e);
     putAll('media', [e]);

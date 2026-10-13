@@ -545,8 +545,8 @@ public class MainActivity extends Activity {
                     for (int i = 0; i < files.length(); i++) {
                         String file = files.getString(i);
                         if (file.contains("/")) continue;
-                        String h = fileHash(new File(mediaDir, file));
-                        String js = "window.__tofMediaHash && window.__tofMediaHash(" + JSONObject.quote(file) + "," + JSONObject.quote(h) + ")";
+                        JSONObject info = fileInfo(new File(mediaDir, file));
+                        String js = "window.__tofMediaHash && window.__tofMediaHash(" + JSONObject.quote(file) + "," + info + ")";
                         web.post(() -> web.evaluateJavascript(js, null));
                     }
                 } catch (Exception ignored) { }
@@ -813,7 +813,7 @@ public class MainActivity extends Activity {
         File[] existing = mediaDir.listFiles((dir, name) -> name.startsWith(base + "."));
         if (existing != null && existing.length > 0) {
             File f = existing[0];
-            report(url, "saved", f.getName(), mimeForExt(f.getName()), f.length(), "", "", fileHash(f));
+            report(url, "saved", f.getName(), mimeForExt(f.getName()), f.length(), "", "", fileInfo(f));
             return;
         }
         HttpURLConnection conn = null;
@@ -846,7 +846,7 @@ public class MainActivity extends Activity {
                 out.close();
                 File dest = new File(mediaDir, base + "." + extFor(mime));
                 if (!tmp.renameTo(dest)) throw new Exception("rename failed");
-                report(url, "saved", dest.getName(), mime, total, etag, lastMod, fileHash(dest));
+                report(url, "saved", dest.getName(), mime, total, etag, lastMod, fileInfo(dest));
             }
         } catch (Exception e) {
             tmp.delete();
@@ -857,11 +857,11 @@ public class MainActivity extends Activity {
     }
 
     private void report(String url, String status, String file, String mime, long size) { report(url, status, file, mime, size, "", ""); }
-    private void report(String url, String status, String file, String mime, long size, String etag, String lastMod) { report(url, status, file, mime, size, etag, lastMod, ""); }
-    private void report(String url, String status, String file, String mime, long size, String etag, String lastMod, String hash) {
+    private void report(String url, String status, String file, String mime, long size, String etag, String lastMod) { report(url, status, file, mime, size, etag, lastMod, new JSONObject()); }
+    private void report(String url, String status, String file, String mime, long size, String etag, String lastMod, JSONObject info) {
         String local = file.isEmpty() ? "" : "https://" + HOST + "/media/" + file;
         String js = "window.__tofMediaDone && window.__tofMediaDone(" + JSONObject.quote(url) + "," + JSONObject.quote(status) + ","
-                + JSONObject.quote(local) + "," + JSONObject.quote(mime) + "," + size + "," + JSONObject.quote(etag) + "," + JSONObject.quote(lastMod) + "," + JSONObject.quote(hash) + ")";
+                + JSONObject.quote(local) + "," + JSONObject.quote(mime) + "," + size + "," + JSONObject.quote(etag) + "," + JSONObject.quote(lastMod) + "," + info + ")";
         web.post(() -> web.evaluateJavascript(js, null));
     }
 
@@ -1000,7 +1000,9 @@ public class MainActivity extends Activity {
         snapView.destroy();
         snapView = null;
         snapUrl = null;
-        reportPage(url, status, name, "multipart/related", f == null ? 0 : f.length(), title, images);
+        long size = f == null ? 0 : f.length();
+        if (images == null || images.equals("[]")) reportPage(url, status, name, "multipart/related", size, title, "[]");
+        else downloads.execute(() -> reportPage(url, status, name, "multipart/related", size, title, bestImages(images)));
         nextSnap();
     }
 
@@ -1049,6 +1051,108 @@ public class MainActivity extends Activity {
         }
         if (!ok) { tmp.delete(); return false; }
         return tmp.renameTo(f);
+    }
+
+    /**
+     * What a saved file is: its exact hash, and for pictures a "looks like" hash (dHash) plus its size, so the
+     * same picture at another size (a thumbnail and the full one) can be recognised.
+     */
+    private static JSONObject fileInfo(File f) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("hash", fileHash(f));
+            int[] wh = new int[2];
+            String d = dHash(f, wh);
+            if (d != null) o.put("dhash", d).put("w", wh[0]).put("h", wh[1]);
+        } catch (Exception ignored) { }
+        return o;
+    }
+
+    /** 64-bit difference hash: shrink to 9x8 grey, compare each pixel with its right neighbour. */
+    private static String dHash(File f, int[] size) {
+        try {
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeFile(f.getPath(), o);
+            if (o.outWidth <= 0 || o.outHeight <= 0) return null;
+            size[0] = o.outWidth;
+            size[1] = o.outHeight;
+            int sample = 1;
+            while (Math.min(o.outWidth, o.outHeight) / (sample * 2) >= 64) sample *= 2;
+            android.graphics.BitmapFactory.Options d = new android.graphics.BitmapFactory.Options();
+            d.inSampleSize = sample;
+            android.graphics.Bitmap b = android.graphics.BitmapFactory.decodeFile(f.getPath(), d);
+            if (b == null) return null;
+            android.graphics.Bitmap s = android.graphics.Bitmap.createScaledBitmap(b, 9, 8, true);
+            long bits = 0;
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    int l = s.getPixel(x, y), r = s.getPixel(x + 1, y);
+                    int gl = (android.graphics.Color.red(l) * 299 + android.graphics.Color.green(l) * 587 + android.graphics.Color.blue(l) * 114);
+                    int gr = (android.graphics.Color.red(r) * 299 + android.graphics.Color.green(r) * 587 + android.graphics.Color.blue(r) * 114);
+                    bits = (bits << 1) | (gl > gr ? 1 : 0);
+                }
+            }
+            if (s != b) s.recycle();
+            b.recycle();
+            return String.format(Locale.US, "%016x", bits);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static int hamming(String a, String b) { return Long.bitCount(Long.parseUnsignedLong(a, 16) ^ Long.parseUnsignedLong(b, 16)); }
+
+    /**
+     * Narrows a page's pictures to the ones worth offering: each is fetched once to learn its real size,
+     * icons (under 120 px) are dropped, and of pictures that look the same only the largest is kept.
+     */
+    private String bestImages(String imagesJson) {
+        JSONArray out = new JSONArray();
+        try {
+            JSONArray in = new JSONArray(imagesJson);
+            List<String> urls = new ArrayList<>(), hashes = new ArrayList<>();
+            List<int[]> sizes = new ArrayList<>();
+            for (int i = 0; i < in.length() && i < 120; i++) {
+                String u = in.getString(i);
+                File tmp = new File(pagesDir, "cand-" + System.nanoTime() + ".tmp");
+                HttpURLConnection c = null;
+                try {
+                    c = (HttpURLConnection) new URL(u).openConnection();
+                    c.setInstanceFollowRedirects(true);
+                    c.setConnectTimeout(15000);
+                    c.setReadTimeout(30000);
+                    c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36");
+                    if (c.getResponseCode() >= 400) continue;
+                    try (InputStream is = c.getInputStream(); OutputStream os = new FileOutputStream(tmp)) {
+                        byte[] buf = new byte[65536];
+                        long total = 0;
+                        int n;
+                        while ((n = is.read(buf)) > 0) { total += n; if (total > 30L * 1024 * 1024) throw new Exception("too large"); os.write(buf, 0, n); }
+                    }
+                    int[] wh = new int[2];
+                    String d = dHash(tmp, wh);
+                    if (d == null || wh[0] < 120 || wh[1] < 120) continue;
+                    // Same look and shape: keep whichever is bigger.
+                    int match = -1;
+                    for (int k = 0; k < hashes.size(); k++) {
+                        int[] o = sizes.get(k);
+                        double ra = (double) wh[0] / wh[1], rb = (double) o[0] / o[1];
+                        if (hamming(d, hashes.get(k)) <= 6 && Math.abs(ra - rb) / Math.max(ra, rb) < 0.08) { match = k; break; }
+                    }
+                    if (match < 0) { urls.add(u); hashes.add(d); sizes.add(wh); }
+                    else if ((long) wh[0] * wh[1] > (long) sizes.get(match)[0] * sizes.get(match)[1]) { urls.set(match, u); hashes.set(match, d); sizes.set(match, wh); }
+                } catch (Exception ignored) {
+                } finally {
+                    if (c != null) c.disconnect();
+                    tmp.delete();
+                }
+            }
+            for (String u : urls) out.put(u);
+        } catch (Exception e) {
+            return imagesJson;
+        }
+        return out.toString();
     }
 
     /** SHA-1 of a file's bytes, so the same picture saved from two links is recognised. */
