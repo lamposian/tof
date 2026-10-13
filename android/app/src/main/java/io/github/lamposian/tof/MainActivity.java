@@ -4,9 +4,12 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.Manifest;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.ContactsContract;
 import android.provider.OpenableColumns;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -42,6 +45,7 @@ public class MainActivity extends Activity {
     private static final String HOST = "appassets.androidplatform.net";
     private static final String START_URL = "https://" + HOST + "/assets/index.html";
     private static final int PICK_FILES = 1;
+    private static final int ASK_CONTACTS = 2;
     private static final int MAX_BYTES = 20 * 1024 * 1024;
     private static final long MAX_MEDIA_BYTES = 300L * 1024 * 1024;
 
@@ -52,6 +56,7 @@ public class MainActivity extends Activity {
     private String pendingText;
     private boolean pageReady;
     private File mediaDir;
+    private String pendingLookup;
     private final ExecutorService downloads = Executors.newFixedThreadPool(3);
 
     @Override
@@ -176,11 +181,61 @@ public class MainActivity extends Activity {
             downloads.execute(() -> download(url));
         }
 
+        /** Looks up saved contact names for a JSON array of numbers; asks for permission the first time. */
+        @JavascriptInterface
+        public void lookupContacts(String numbersJson, boolean ask) {
+            runOnUiThread(() -> {
+                if (checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+                    downloads.execute(() -> lookup(numbersJson));
+                } else if (ask) {
+                    pendingLookup = numbersJson;
+                    requestPermissions(new String[] { Manifest.permission.READ_CONTACTS }, ASK_CONTACTS);
+                } else {
+                    sendContacts(new JSONObject(), "not-asked");
+                }
+            });
+        }
+
         @JavascriptInterface
         public void clearMedia() {
             File[] files = mediaDir.listFiles();
             if (files != null) for (File f : files) f.delete();
         }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != ASK_CONTACTS) return;
+        String numbers = pendingLookup;
+        pendingLookup = null;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED && numbers != null) {
+            downloads.execute(() -> lookup(numbers));
+        } else {
+            sendContacts(new JSONObject(), "denied");
+        }
+    }
+
+    private void lookup(String numbersJson) {
+        JSONObject names = new JSONObject();
+        try {
+            JSONArray numbers = new JSONArray(numbersJson);
+            for (int i = 0; i < numbers.length(); i++) {
+                String number = numbers.getString(i);
+                Uri uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number));
+                try (Cursor c = getContentResolver().query(uri, new String[] { ContactsContract.PhoneLookup.DISPLAY_NAME }, null, null, null)) {
+                    if (c != null && c.moveToFirst() && c.getString(0) != null) names.put(number, c.getString(0));
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        sendContacts(names, "granted");
+    }
+
+    private void sendContacts(JSONObject names, String state) {
+        String js = "window.__tofContacts && window.__tofContacts(" + names + "," + JSONObject.quote(state) + ")";
+        web.post(() -> web.evaluateJavascript(js, null));
     }
 
     private void download(String url) {

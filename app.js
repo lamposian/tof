@@ -111,7 +111,9 @@
   const localDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const rec = c => records.get(c) || { contact: c, fields: {} };
-  const displayName = c => (rec(c).fields.name || '').trim() || c;
+  const phoneNames = {};       // number -> name saved in the phone's contacts
+  let contactsState = '';       // granted | denied | not-asked
+  const displayName = c => (rec(c).fields.name || '').trim() || phoneNames[c] || c;
   const tagsOf = c => (rec(c).fields.tags || '').split(',').map(t => t.trim()).filter(Boolean);
 
   function setStatus(text, warn) { const s = $('status'); s.textContent = text; s.classList.toggle('warn', !!warn); }
@@ -139,6 +141,7 @@
     showTab('convos');
     render();
     saveMediaFor(fresh);
+    if (fresh.length) lookupContacts(false);
   }
 
   // ---- Media: pictures and videos are downloaded into the app so they outlive TextNow's links ----
@@ -180,6 +183,23 @@
     return (pics ? `<div class="pics">${pics}</div>` : '') + words;
   }
 
+  // ---- Names from the phone's contacts (Android app only) ----
+  const looksLikeNumber = c => /^\+?[\d\s().-]{6,}$/.test(c);
+  function lookupContacts(ask) {
+    if (!native || !native.lookupContacts || isExample) return;
+    const numbers = [...new Set(messages.map(m => m.contact))].filter(looksLikeNumber);
+    if (!numbers.length) return;
+    let asked = false;
+    try { asked = localStorage.getItem('tof-contacts-asked') === '1'; localStorage.setItem('tof-contacts-asked', '1'); } catch (e) {}
+    native.lookupContacts(JSON.stringify(numbers), ask || !asked);
+  }
+  window.__tofContacts = (names, state) => {
+    contactsState = state;
+    Object.assign(phoneNames, names || {});
+    if (state === 'denied') setStatus("Tof can't read your contacts. To show their names, allow Contacts for Tof in Settings > Apps > Tof > Permissions.", true);
+    renderContacts(); renderReader();
+  };
+
   // ---- Rendering ----
   function contactList() {
     const contacts = new Map();
@@ -217,7 +237,7 @@
   function matches(c) {
     if (!query) return true;
     const r = rec(c);
-    const hay = [c, ...Object.values(r.fields || {})].join(' ').toLowerCase();
+    const hay = [c, phoneNames[c] || '', ...Object.values(r.fields || {})].join(' ').toLowerCase();
     return query.toLowerCase().split(/\s+/).every(w => hay.includes(w));
   }
 
@@ -226,6 +246,7 @@
     const shown = list.filter(c => matches(c.name));
     const max = Math.max(1, ...list.map(c => c.total));
     if (!selected && list[0]) selected = list[0].name;
+    $('usecontacts').hidden = !native || isExample || contactsState === 'granted' || !list.some(c => looksLikeNumber(c.name));
     $('contacts').innerHTML = shown.length ? shown.map(c => {
       const name = displayName(c.name), tags = tagsOf(c.name);
       return `<tr tabindex="0" data-c="${esc(c.name)}" class="${c.name === selected ? 'sel' : ''}"><td><div class="who"><b>${esc(name)}</b>${name !== c.name ? `<small>${esc(c.name)}</small>` : ''}${tags.length ? `<span class="chips">${tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</span>` : ''}</div></td><td class="num">${fmt.format(c.total)}<span class="bar" style="width:${Math.max(2, c.total / max * 50)}px"></span></td><td class="num">${dayFmt.format(c.last)}</td></tr>`;
@@ -245,12 +266,12 @@
       : `${urls.length} picture or video link${urls.length === 1 ? '' : 's'}. Saving them needs the Android app.`;
     const dis = isExample ? ' disabled' : '';
     form.innerHTML = `
-      <label for="f-name">Name<input id="f-name" data-f="name" value="${esc(f.name || '')}" placeholder="${esc(selected)}"${dis}></label>
+      <label for="f-name">Name<input id="f-name" data-f="name" value="${esc(f.name || '')}" placeholder="${esc(phoneNames[selected] || selected)}"${dis}></label>
       <label for="f-tags">Tags<input id="f-tags" data-f="tags" value="${esc(f.tags || '')}" placeholder="Comma separated, like work, family"${dis}></label>
       ${fieldDefs.map(d => `<div class="row"><label for="f-${esc(d.id)}">${esc(d.label)}<input id="f-${esc(d.id)}" data-f="${esc(d.id)}" value="${esc(f[d.id] || '')}"${dis}></label><button type="button" class="x" data-remove="${esc(d.id)}" aria-label="Remove field ${esc(d.label)}"${dis}>×</button></div>`).join('')}
       <label for="f-notes">Notes<textarea id="f-notes" data-f="notes"${dis}>${esc(f.notes || '')}</textarea></label>
       <div class="add"><input id="newfield" placeholder="New field, like Company or Case number" aria-label="New field name"${dis}><button type="button" class="btn" id="addfield"${dis}>Add field</button></div>
-      <p class="meta">${isExample ? 'Add your own exports to start keeping records.' : esc(mediaLine) + (r.updated ? ` Record updated ${esc(fullFmt.format(new Date(r.updated)))}.` : '')}</p>`;
+      <p class="meta">${isExample ? 'Add your own exports to start keeping records.' : (phoneNames[selected] ? `Saved in your contacts as ${esc(phoneNames[selected])}. ` : '') + esc(mediaLine) + (r.updated ? ` Record updated ${esc(fullFmt.format(new Date(r.updated)))}.` : '')}</p>`;
     form.hidden = false;
   }
 
@@ -413,6 +434,7 @@
   ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', e => { if (e.dataTransfer.files.length) addFiles([...e.dataTransfer.files]); });
   $('file').addEventListener('change', e => { if (e.target.files.length) addFiles([...e.target.files]); e.target.value = ''; });
+  $('usecontacts').addEventListener('click', () => lookupContacts(true));
   $('search').addEventListener('input', e => { query = e.target.value.trim(); renderContacts(); });
 
   // Clearing deletes saved records and media, so it takes a second tap.
@@ -456,5 +478,6 @@
     render();
     ready();
     saveMediaFor(messages);
+    lookupContacts(false);
   })();
 })();

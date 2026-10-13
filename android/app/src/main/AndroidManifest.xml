@@ -3,6 +3,8 @@
 
     <!-- Only used to show pictures and open links inside messages. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Only used to show saved contact names next to phone numbers. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
 
     <application
         android:label="@string/app_name"
