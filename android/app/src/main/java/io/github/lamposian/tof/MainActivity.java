@@ -63,6 +63,13 @@ public class MainActivity extends Activity {
     private String pendingText;
     private boolean pageReady;
     private File mediaDir;
+    // Saved copies of contacts' links: web pages as MHTML archives, other files as downloaded.
+    private File pagesDir;
+    private final java.util.ArrayDeque<String> snapQueue = new java.util.ArrayDeque<>();
+    private WebView snapView;
+    private String snapUrl;
+    private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable snapSettle = this::saveSnap, snapGiveUp = this::saveSnap;
     private String pendingLookup;
     private String pendingSaveAs;
     // A contact to open once the page is ready, from a tapped timer notification.
@@ -80,6 +87,8 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         mediaDir = new File(getFilesDir(), "media");
         mediaDir.mkdirs();
+        pagesDir = new File(getFilesDir(), "pages");
+        pagesDir.mkdirs();
         assets = new WebViewAssetLoader.Builder()
                 .setDomain(HOST)
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
@@ -245,6 +254,7 @@ public class MainActivity extends Activity {
         downloads.shutdownNow();
         logIo.shutdown();
         mediaIo.shutdown();
+        if (snapView != null) { snapView.destroy(); snapView = null; }
         super.onDestroy();
     }
 
@@ -430,8 +440,51 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** Saves a copy of a link: a web page as an archive, anything else (PDF, picture) as the file itself. */
+        @JavascriptInterface
+        public void snapshot(String url) {
+            if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
+            downloads.execute(() -> probe(url));
+        }
+
+        /** Opens a saved copy: archives in Tof's offline viewer, other files in whatever app handles them. */
+        @JavascriptInterface
+        public void openSaved(String file, String mime) {
+            if (file == null || file.contains("/") || !new File(pagesDir, file).isFile()) return;
+            runOnUiThread(() -> {
+                if (file.endsWith(".mht")) {
+                    startActivity(new Intent(MainActivity.this, PageActivity.class).putExtra("file", file));
+                    return;
+                }
+                Uri uri = androidx.core.content.FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".files", new File(pagesDir, file));
+                Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime == null || mime.isEmpty() ? "*/*" : mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try { startActivity(i); } catch (ActivityNotFoundException ignored) { }
+            });
+        }
+
+        /**
+         * Turns a saved picture by 90, 180 or 270 degrees, rewriting the file. Reports back through
+         * __tofRotated(file, ok) once done.
+         */
+        @JavascriptInterface
+        public void rotateMedia(String file, int degrees) {
+            if (file == null || file.contains("/")) return;
+            downloads.execute(() -> {
+                boolean ok = rotateFile(new File(mediaDir, file), degrees);
+                String js = "window.__tofRotated && window.__tofRotated(" + JSONObject.quote(file) + "," + ok + ")";
+                web.post(() -> web.evaluateJavascript(js, null));
+            });
+        }
+
+        @JavascriptInterface
+        public void deleteSaved(String file) {
+            if (file != null && !file.contains("/")) new File(pagesDir, file).delete();
+        }
+
         @JavascriptInterface
         public void clearMedia() {
+            File[] pages = pagesDir.listFiles();
+            if (pages != null) for (File f : pages) f.delete();
             File[] files = mediaDir.listFiles();
             if (files != null) for (File f : files) f.delete();
         }
@@ -579,7 +632,7 @@ public class MainActivity extends Activity {
                 for (int i = 0; i < items.length(); i++) {
                     JSONObject it = items.getJSONObject(i);
                     String file = it.optString("file"), name = it.optString("name"), token = it.optString("token");
-                    File src = new File(mediaDir, file);
+                    File src = new File("pages".equals(it.optString("dir")) ? pagesDir : mediaDir, file);
                     if (file.isEmpty() || file.contains("/") || token.isEmpty() || !src.isFile()) continue;
                     boolean present = false;
                     for (String h : have) if (h.contains(token)) { present = true; break; }
@@ -718,6 +771,164 @@ public class MainActivity extends Activity {
         web.post(() -> web.evaluateJavascript(js, null));
     }
 
+    /** Looks at what a link points to. Web pages go to the snapshot queue; other files are saved directly. */
+    private void probe(String url) {
+        String base = "p-" + sha1(url).substring(0, 10) + "-" + System.currentTimeMillis();
+        HttpURLConnection conn = null;
+        File tmp = new File(pagesDir, base + ".part");
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setInstanceFollowRedirects(true);
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(60000);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36");
+            int code = conn.getResponseCode();
+            String type = conn.getContentType() == null ? "" : conn.getContentType().split(";")[0].trim().toLowerCase(Locale.US);
+            if (type.isEmpty() || type.contains("html") || code >= 400) {
+                // A page (or one that refuses plain downloads): let a browser engine load it.
+                conn.disconnect();
+                conn = null;
+                runOnUiThread(() -> { snapQueue.add(url); nextSnap(); });
+                return;
+            }
+            try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[65536];
+                long total = 0;
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    total += n;
+                    if (total > MAX_MEDIA_BYTES) throw new Exception("too large");
+                    out.write(buf, 0, n);
+                }
+                out.close();
+                File dest = new File(pagesDir, base + "." + pageExt(type, url));
+                if (!tmp.renameTo(dest)) throw new Exception("rename failed");
+                reportPage(url, "saved", dest.getName(), type, total, "");
+            }
+        } catch (Exception e) {
+            tmp.delete();
+            reportPage(url, "failed", "", "", 0, "");
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static String pageExt(String mime, String url) {
+        if (mime.equals("application/pdf")) return "pdf";
+        if (mime.startsWith("image/") || mime.startsWith("video/")) return extFor(mime);
+        if (mime.equals("text/plain")) return "txt";
+        String path = Uri.parse(url).getLastPathSegment();
+        int dot = path == null ? -1 : path.lastIndexOf('.');
+        String ext = dot >= 0 ? path.substring(dot + 1).toLowerCase(Locale.US) : "";
+        return ext.matches("[a-z0-9]{1,5}") ? ext : "bin";
+    }
+
+    /** Loads the next queued page in an off-screen browser; once it settles, saves it as an archive. */
+    private void nextSnap() {
+        if (snapView != null || snapQueue.isEmpty()) return;
+        snapUrl = snapQueue.poll();
+        snapView = new WebView(this);
+        WebSettings s = snapView.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
+        s.setLoadsImagesAutomatically(true);
+        snapView.layout(0, 0, 1080, 2400);
+        snapView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                // Pages keep loading pictures and text after "finished"; wait for them to settle.
+                ui.removeCallbacks(snapSettle);
+                ui.postDelayed(snapSettle, 3000);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
+                if (request.isForMainFrame()) finishSnap("failed", "", "");
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                String scheme = request.getUrl().getScheme();
+                return !("http".equals(scheme) || "https".equals(scheme));
+            }
+        });
+        ui.postDelayed(snapGiveUp, 45000);
+        snapView.loadUrl(snapUrl);
+    }
+
+    private void saveSnap() {
+        if (snapView == null) return;
+        ui.removeCallbacks(snapSettle);
+        ui.removeCallbacks(snapGiveUp);
+        String name = "p-" + sha1(snapUrl).substring(0, 10) + "-" + System.currentTimeMillis() + ".mht";
+        String title = snapView.getTitle() == null ? "" : snapView.getTitle();
+        // The page's real pictures (not icons), so Bob can pick some for the contact's media.
+        String pics = "(function(){var s=new Set();var m=document.querySelector('meta[property=\"og:image\"]');if(m&&m.content)s.add(new URL(m.content,location.href).href);"
+                + "Array.prototype.forEach.call(document.images,function(i){var u=i.currentSrc||i.src;if(/^https?:/.test(u)&&i.naturalWidth>=150&&i.naturalHeight>=150)s.add(u);});"
+                + "return JSON.stringify(Array.from(s).slice(0,60));})()";
+        WebView view = snapView;
+        view.evaluateJavascript(pics, found -> {
+            if (snapView != view) return;
+            String images = "[]";
+            try { images = new JSONArray(new org.json.JSONTokener(found).nextValue().toString()).toString(); } catch (Exception ignored) { }
+            String imgs = images;
+            view.saveWebArchive(new File(pagesDir, name).getPath(), false, path -> {
+                if (path == null) finishSnap("failed", "", title, imgs);
+                else finishSnap("saved", name, title, imgs);
+            });
+        });
+    }
+
+    private void finishSnap(String status, String name, String title) { finishSnap(status, name, title, "[]"); }
+    private void finishSnap(String status, String name, String title, String images) {
+        if (snapView == null) return;
+        ui.removeCallbacks(snapSettle);
+        ui.removeCallbacks(snapGiveUp);
+        String url = snapUrl;
+        File f = name.isEmpty() ? null : new File(pagesDir, name);
+        snapView.stopLoading();
+        snapView.destroy();
+        snapView = null;
+        snapUrl = null;
+        reportPage(url, status, name, "multipart/related", f == null ? 0 : f.length(), title, images);
+        nextSnap();
+    }
+
+    private void reportPage(String url, String status, String file, String mime, long size, String title) { reportPage(url, status, file, mime, size, title, "[]"); }
+    private void reportPage(String url, String status, String file, String mime, long size, String title, String images) {
+        String js = "window.__tofPageDone && window.__tofPageDone(" + JSONObject.quote(url) + "," + JSONObject.quote(status) + "," + JSONObject.quote(file) + ","
+                + JSONObject.quote(mime) + "," + size + "," + JSONObject.quote(title) + "," + images + ")";
+        web.post(() -> web.evaluateJavascript(js, null));
+    }
+
+    private static boolean rotateFile(File f, int degrees) {
+        int d = ((degrees % 360) + 360) % 360;
+        if (!f.isFile() || d == 0) return d == 0;
+        String name = f.getName().toLowerCase(Locale.US);
+        android.graphics.Bitmap.CompressFormat fmt = name.endsWith(".png") ? android.graphics.Bitmap.CompressFormat.PNG
+                : name.endsWith(".webp") ? android.graphics.Bitmap.CompressFormat.WEBP
+                : name.endsWith(".jpg") ? android.graphics.Bitmap.CompressFormat.JPEG : null;
+        if (fmt == null) return false;
+        android.graphics.Bitmap src = android.graphics.BitmapFactory.decodeFile(f.getPath());
+        if (src == null) return false;
+        android.graphics.Matrix m = new android.graphics.Matrix();
+        m.postRotate(d);
+        android.graphics.Bitmap out = android.graphics.Bitmap.createBitmap(src, 0, 0, src.getWidth(), src.getHeight(), m, true);
+        File tmp = new File(f.getPath() + ".rot");
+        try (OutputStream o = new FileOutputStream(tmp)) {
+            if (!out.compress(fmt, 92, o)) return false;
+        } catch (Exception e) {
+            tmp.delete();
+            return false;
+        } finally {
+            if (out != src) out.recycle();
+            src.recycle();
+        }
+        return tmp.renameTo(f);
+    }
+
     private static String header(HttpURLConnection c, String name) { String v = c.getHeaderField(name); return v == null ? "" : v; }
 
     /**
@@ -818,6 +1029,9 @@ public class MainActivity extends Activity {
             case "mov": return "video/quicktime";
             case "webm": return "video/webm";
             case "mp4": return "video/mp4";
+            case "mht": return "multipart/related";
+            case "pdf": return "application/pdf";
+            case "txt": return "text/plain";
             default: return "image/*";
         }
     }

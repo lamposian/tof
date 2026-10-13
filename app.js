@@ -312,7 +312,7 @@
       etag: etag || prev.etag || '', lastMod: lastMod || prev.lastMod || '', checkedAt: fresh ? Date.now() : prev.checkedAt || 0, online: status === 'gone' ? false : fresh ? true : prev.online };
     mediaIdx.set(url, e);
     putAll('media', [e]);
-    if (status === 'saved') copySoon();
+    if (status === 'saved') { copySoon(); const r = pendingRotation(url); if (r) setTimeout(() => rotateSaved(url, r.x.rot), 0); }
     if (status === 'saved' || status === 'gone') { mediaTally[status]++; clearTimeout(mediaLogT); mediaLogT = setTimeout(logMedia, 3000); }
     clearTimeout(rr); rr = setTimeout(refreshMedia, 300);
   };
@@ -543,7 +543,7 @@
       ${offerSave(id, ns) ? `<p class="offer">${name ? esc(name) : 'This contact'} isn't in your phone's contacts. <button type="button" class="btn" id="savephone"${dis()}>Save to phone contacts</button></p>` : ''}
       ${p.phone ? phoneCopyHtml(p.phone) : ''}
       <div class="group"><span class="lbl">Links</span>
-        ${linksOf(id).map((u, i) => `<div class="linkrow"><input data-link="${i}" value="${esc(u)}" aria-label="Link ${i + 1}" inputmode="url"${dis()}><button type="button" class="btn" data-open="${i}">Open</button><button type="button" class="btn" data-copy="${i}">Copy</button><button type="button" class="x" data-unlink="${i}" aria-label="Remove link ${i + 1}"${dis()}>×</button></div>`).join('')}
+        ${linksOf(id).map((u, i) => `<div class="linkrow"><input data-link="${i}" value="${esc(u)}" aria-label="Link ${i + 1}" inputmode="url"${dis()}><button type="button" class="btn" data-open="${i}">Open</button><button type="button" class="btn" data-copy="${i}">Copy</button><button type="button" class="x" data-unlink="${i}" aria-label="Remove link ${i + 1}"${dis()}>×</button></div>${snapLine(u)}`).join('')}
         <div class="add"><input id="newlink" placeholder="Paste a link" aria-label="New link" inputmode="url"${dis()}><button type="button" class="btn" id="addlink"${dis()}>Add link</button></div>
       </div>
       <label for="f-tags">Tags<input id="f-tags" data-f="tags" value="${esc(f.tags || '')}" placeholder="Comma separated, like work, family"${dis()}></label>
@@ -632,6 +632,8 @@
   const isVideo = i => isSavedE(i.e) ? /^video\//.test(i.e.mime) : VIDEO_RE.test(i.u);
   const keyOfNumber = n => personOf(n) ? 'p:' + personOf(n) : 'n:' + n;
   const whoOf = n => personOf(n) ? nameOf(personOf(n)) : phoneNames[n] || n;
+  const keyOfM = m => m.person ? 'p:' + m.person : keyOfNumber(m.contact);
+  const whoOfM = m => m.person ? nameOf(m.person) : whoOf(m.contact);
   const itemsOf = msgs => {
     const out = [];
     [...msgs].sort((a, b) => b.when - a.when).forEach(m => urlsOf(m).forEach(u => { const e = mediaIdx.get(u); if (!e || e.status !== 'notmedia') out.push({ u, m, e: e || {} }); }));
@@ -656,10 +658,10 @@
   let mediaItems = [];
   function renderMedia(msgs, multi) {
     if ($('view-contact').hidden || sub !== 'media') return;
-    mediaItems = itemsOf(msgs);
+    mediaItems = itemsOf(only || !openId() ? msgs : [...msgs, ...pickMsgs(openId())]);
     $('mediasub').textContent = !mediaItems.length ? 'No pictures or videos.'
       : `${fmt.format(mediaItems.length)} picture${mediaItems.length === 1 ? '' : 's'} or video${mediaItems.length === 1 ? '' : 's'}, newest first. ${savedLine(mediaItems)}`;
-    $('mediagrid').innerHTML = mediaItems.map((i, n) => tileHtml(i, n, dayFmt.format(i.m.when) + (multi ? ' · ' + (num(i.m.contact).label || i.m.contact) : ''))).join('');
+    $('mediagrid').innerHTML = mediaItems.map((i, n) => tileHtml(i, n, i.m.link ? 'From ' + hostOf(i.m.link) : dayFmt.format(i.m.when) + (multi ? ' · ' + (num(i.m.contact).label || i.m.contact) : ''))).join('');
     checkFresh(mediaItems.map(i => i.u));
     saveMediaFor(mediaItems.map(i => i.m));
   }
@@ -669,16 +671,16 @@
   const monthFmt = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' });
   function renderAllMedia() {
     if ($('view-media').hidden) return;
-    const every = itemsOf(messages);
+    const every = itemsOf([...messages, ...allPickMsgs()]);
     const counts = new Map();
-    every.forEach(i => { const k = keyOfNumber(i.m.contact); counts.set(k, (counts.get(k) || 0) + 1); });
+    every.forEach(i => { const k = keyOfM(i.m); counts.set(k, (counts.get(k) || 0) + 1); });
     if (mWho && !counts.has(mWho)) mWho = '';
     const whoName = k => k.startsWith('p:') ? nameOf(k.slice(2)) : phoneNames[k.slice(2)] || k.slice(2);
     const chip = (v, t, on, attr) => `<button type="button" class="chip pick${on ? ' on' : ''}" data-${attr}="${esc(v)}" aria-pressed="${on}">${esc(t)}</button>`;
     $('mwho').innerHTML = counts.size > 1 ? [chip('', 'Everyone', !mWho, 'who'), ...[...counts].sort((a, b) => b[1] - a[1]).map(([k]) => chip(k, whoName(k), k === mWho, 'who'))].join('') : '';
     $('mkind').innerHTML = every.length ? [['', 'All'], ['pic', 'Pictures'], ['video', 'Videos']].map(([v, t]) => chip(v, t, v === mKind, 'kind')).join('') : '';
-    allItems = every.filter(i => (!mWho || keyOfNumber(i.m.contact) === mWho) && (!mKind || (mKind === 'video') === isVideo(i)));
-    const whoN = new Set(every.map(i => keyOfNumber(i.m.contact))).size;
+    allItems = every.filter(i => (!mWho || keyOfM(i.m) === mWho) && (!mKind || (mKind === 'video') === isVideo(i)));
+    const whoN = new Set(every.map(i => keyOfM(i.m))).size;
     $('allmediasub').textContent = isExample ? 'Pictures and videos from your conversations will show here once you import some.'
       : !every.length ? 'No pictures or videos yet.'
       : `${fmt.format(every.length)} picture${every.length === 1 ? '' : 's'} and video${every.length === 1 ? '' : 's'} from ${fmt.format(whoN)} contact${whoN === 1 ? '' : 's'}. Tap to view, press and hold to open the message. ${savedLine(every)}`;
@@ -687,7 +689,7 @@
     shown.forEach((i, n) => {
       const mo = monthFmt.format(i.m.when);
       if (mo !== month) { html += `${month ? '</div>' : ''}<h2 class="mmonth">${esc(mo)}</h2><div class="mgrid">`; month = mo; }
-      html += tileHtml(i, n, whoOf(i.m.contact) + ' · ' + dayFmt.format(i.m.when));
+      html += tileHtml(i, n, whoOfM(i.m) + ' · ' + (i.m.link ? hostOf(i.m.link) : dayFmt.format(i.m.when)));
     });
     $('allmedia').innerHTML = html + (month ? '</div>' : '') + (every.length && !allItems.length ? '<p class="empty">Nothing matches.</p>' : '');
     $('mediamore').hidden = allItems.length <= mShown;
@@ -723,12 +725,14 @@
     $('mediaview').innerHTML = e.status === 'gone' ? '<p class="empty">This one expired at TextNow before Tof could save it.</p>'
       : isVideo(i) ? `<video src="${esc(src)}" controls autoplay playsinline></video>` : `<img src="${esc(src)}" alt="Picture message" referrerpolicy="no-referrer">`;
     const state = e.status === 'gone' ? 'Expired before saving' : !saved ? 'Not saved on this phone yet' : e.online === false ? 'Saved on this phone. No longer on TextNow' : e.checkedAt ? `Saved on this phone. Matched TextNow's copy ${dayFmt.format(new Date(e.checkedAt))}` : 'Saved on this phone';
-    const label = num(m.contact).label, who = whoOf(m.contact) + (label ? ` · ${label}` : '');
+    const label = m.contact && num(m.contact).label, who = whoOfM(m) + (label ? ` · ${label}` : '') + (m.link ? ` · from ${hostOf(m.link)}` : '');
     $('mediacap').innerHTML = `<b>${esc(m.you ? 'You to ' + who : who)}</b><br>${esc(fullFmt.format(m.when))}<br>${esc(state)}${(e.versions || []).length ? `<br>Earlier versions: ${e.versions.map(v => `<a href="${esc(v.local)}" target="_blank" rel="noopener">${esc(dayFmt.format(new Date(v.at)))}</a>`).join(', ')}` : ''}`;
     $('mediacount').textContent = list.length > 1 ? `${fmt.format(n + 1)} of ${fmt.format(list.length)}` : '';
     $('mediaprev').disabled = n === 0; $('medianext').disabled = n >= list.length - 1;
     $('mediaprev').hidden = $('medianext').hidden = list.length < 2;
     $('mediasave').hidden = !saved || !native || !native.saveMediaAs;
+    $('mediarot').hidden = !saved || isVideo(i) || !native || !native.rotateMedia;
+    $('mediashow').textContent = m.link ? 'Show the link' : 'Show in conversation';
     const d = $('mediadlg'); if (!d.open) { if (d.showModal) d.showModal(); else d.setAttribute('open', ''); }
   }
   function closeMedia() { const d = $('mediadlg'); $('mediaview').innerHTML = ''; if (d.close) d.close(); else d.removeAttribute('open'); }
@@ -742,6 +746,7 @@
   $('mediaclose').addEventListener('click', closeMedia);
   $('mediadlg').addEventListener('close', () => { $('mediaview').innerHTML = ''; });
   $('mediashow').addEventListener('click', () => jumpTo(viewList[viewAt]));
+  $('mediarot').addEventListener('click', () => { const i = viewList[viewAt]; if (i) rotateSaved(i.u, 90); });
   $('mediasave').addEventListener('click', () => {
     const i = viewList[viewAt]; if (!i || !isSavedE(i.e)) return;
     native.saveMediaAs(fileOf(i.e), exportName(i), i.e.mime || '');
@@ -758,11 +763,12 @@
     const fromMedia = !$('view-media').hidden;
     jumpFrom = fromMedia ? window.scrollY : null;
     if ($('mediadlg').open) closeMedia();
-    flushSave(); sel = keyOfNumber(i.m.contact); only = '';
-    renderContacts(); showTab('contact'); showSub('convos');
-    const el = [...document.querySelectorAll('#reader .msg')].find(x => x.dataset.k === i.m.k);
+    flushSave(); sel = keyOfM(i.m); only = '';
+    renderContacts(); showTab('contact'); showSub(i.m.link ? 'info' : 'convos');
+    const el = i.m.link ? [...document.querySelectorAll('#record [data-link]')].find(x => normLink(x.value) === i.m.link)?.closest('.linkrow')
+      : [...document.querySelectorAll('#reader .msg')].find(x => x.dataset.k === i.m.k);
     if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 2600); }
-    $('jumptext').textContent = `Jumped to ${i.m.you ? 'your' : whoOf(i.m.contact) + "'s"} ${isVideo(i) ? 'video' : 'picture'} from ${dayFmt.format(i.m.when)}`;
+    $('jumptext').textContent = `Jumped to ${i.m.you ? 'your' : whoOfM(i.m) + "'s"} ${isVideo(i) ? 'video' : 'picture'} from ${i.m.link ? hostOf(i.m.link) : dayFmt.format(i.m.when)}`;
     $('jumpback').hidden = !fromMedia;
     $('jumpnote').hidden = false;
     clearTimeout(jumpTo.t); jumpTo.t = setTimeout(() => { $('jumpnote').hidden = true; }, 6000);
@@ -775,19 +781,25 @@
   // ---- Media folder: copies of saved pictures and videos in a folder Bob picks, so they outlive Tof ----
   let mediaFolderName = '';
   const copiedTokens = new Set();
-  const fileOf = e => (e.local || '').split('/').pop();
+  const fileOf = e => (e.local || '').replace(/\?.*$/, '').split('/').pop();
   const tokenOf = e => fileOf(e).split('.')[0].slice(0, 10) + ((e.versions || []).length ? '-v' + (e.versions.length + 1) : '');
   const pad = n => String(n).padStart(2, '0');
   function exportName(i) {
     const d = i.m.when, ext = fileOf(i.e).split('.').pop();
-    const who = whoOf(i.m.contact).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const who = whoOfM(i.m).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}${pad(d.getMinutes())} ${who}${i.m.you ? ' (you)' : ''} ${tokenOf(i.e)}.${ext}`;
   }
   let copyT;
   function copyToFolder() {
     if (!native || !native.copyMedia || !mediaFolderName || isExample) return;
-    const items = itemsOf(messages).filter(i => isSavedE(i.e) && !copiedTokens.has(tokenOf(i.e)))
+    const items = itemsOf([...messages, ...allPickMsgs()]).filter(i => isSavedE(i.e) && !copiedTokens.has(tokenOf(i.e)))
       .map(i => ({ file: fileOf(i.e), name: exportName(i), token: tokenOf(i.e) }));
+    Object.entries(pages).forEach(([u, e]) => [e, ...(e.versions || [])].forEach(v => {
+      if (!v.file || copiedTokens.has(v.file.replace(/\.\w+$/, ''))) return;
+      const p = whoHasLink(u), d = new Date(v.savedAt || v.at), clean = s => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+      items.push({ dir: 'pages', file: v.file, token: v.file.replace(/\.\w+$/, ''),
+        name: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clean(p ? nameOf(p.id) : 'Link')} ${clean(e.title || hostOf(u))} ${v.file}` });
+    }));
     for (let k = 0; k < items.length; k += 200) native.copyMedia(JSON.stringify(items.slice(k, k + 200)));
   }
   const copySoon = () => { clearTimeout(copyT); copyT = setTimeout(copyToFolder, 2000); };
@@ -997,6 +1009,125 @@
     showLinkDlg(urls, title || rest.split('\n')[0].slice(0, 200));
   };
 
+  // ---- Saved copies of links: Android saves each contact link's page (or file) so it can be read offline ----
+  let pages = {}; // normalised link -> { status, file, mime, size, title, images[], at, versions[] }
+  const savePages = () => putAll('meta', [{ id: 'pages', map: pages }]);
+  const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return u; } };
+  const whoHasLink = u => [...people.values()].find(p => (p.fields.links || []).some(l => normLink(l) === u));
+  let snapT;
+  function snapLinks() {
+    if (!native || !native.snapshot || isExample) return;
+    const stale = Date.now() - 10 * 6e4;
+    people.forEach(p => (p.fields.links || []).map(normLink).filter(Boolean).forEach(u => {
+      const e = pages[u];
+      if (e && (e.status === 'saved' || e.status === 'failed' || (e.status === 'pending' && e.at > stale))) return;
+      pages[u] = { ...(e || {}), status: 'pending', at: Date.now() };
+      native.snapshot(u);
+    }));
+    savePages();
+  }
+  const snapSoon = () => { clearTimeout(snapT); snapT = setTimeout(snapLinks, 800); };
+  function snapAgain(u) {
+    if (!native || !native.snapshot) return;
+    pages[u] = { ...(pages[u] || {}), status: 'pending', again: true, at: Date.now() };
+    savePages(); native.snapshot(u); renderReader();
+  }
+  window.__tofPageDone = (url, status, file, mime, size, title, images) => {
+    const prev = pages[url] || {}, p = whoHasLink(url), who = p ? nameOf(p.id) : 'a contact';
+    if (status === 'saved') {
+      const versions = [...(prev.versions || [])];
+      if (prev.file && prev.file !== file) versions.push({ file: prev.file, mime: prev.mime, at: prev.savedAt || prev.at });
+      pages[url] = { status, file, mime, size, title: title || prev.title || '', images: (images && images.length ? images : prev.images) || [], at: Date.now(), savedAt: Date.now(), versions };
+      logEvent('link', `${prev.again ? 'Saved a new copy' : 'Saved a copy'} of ${url} for ${who}`);
+      copySoon();
+    } else if (prev.file) {
+      pages[url] = { ...prev, status: 'saved', again: false };
+      logEvent('link', `Couldn't save a new copy of ${url}; the earlier copy is kept`);
+    } else {
+      pages[url] = { status: 'failed', at: Date.now() };
+      logEvent('link', `Couldn't save a copy of ${url} for ${who}`);
+    }
+    savePages();
+    clearTimeout(rr); rr = setTimeout(refreshMedia, 300);
+  };
+  function snapLine(raw) {
+    const u = normLink(raw), e = pages[u];
+    if (!native || !native.snapshot || !u || isExample) return '';
+    if (!e || e.status === 'pending') return `<small class="snap">Saving a copy of this page…</small>`;
+    if (e.status === 'failed') return `<small class="snap warn">Couldn't save a copy. <button type="button" class="linkbtn" data-snapagain="${esc(u)}">Try again</button></small>`;
+    const kind = /pdf/.test(e.mime) ? 'PDF' : /^image\//.test(e.mime) ? 'picture' : /^video\//.test(e.mime) ? 'video' : 'copy';
+    const n = (e.images || []).length;
+    return `<small class="snap">Saved ${kind} ${esc(dayFmt.format(new Date(e.savedAt || e.at)))}${(e.versions || []).length ? ` (${e.versions.length + 1} versions)` : ''} ·
+      <button type="button" class="linkbtn" data-snapopen="${esc(u)}">Open saved ${kind === 'copy' ? 'copy' : kind}</button>
+      ${n ? ` · <button type="button" class="linkbtn" data-picks="${esc(u)}">Pick pictures (${n})</button>` : ''}
+      · <button type="button" class="linkbtn" data-snapagain="${esc(u)}">Save again</button></small>`;
+  }
+
+  // Pictures picked from a saved page join the contact's media, labelled with the link they came from.
+  const pickMsgs = id => ((people.get(id) || {}).picks || []).map(x => ({ person: id, contact: '', media: [x.u], text: '', when: new Date(x.at), you: false, k: 'pick:' + x.u, link: x.link }));
+  const allPickMsgs = () => [...people.keys()].flatMap(pickMsgs);
+  let pickState = null;
+  function openPicks(id, u) {
+    const e = pages[u]; if (!e) return;
+    const have = new Set(((people.get(id) || {}).picks || []).map(x => x.u));
+    pickState = { id, link: u, items: (e.images || []).map(src => ({ u: src, on: false, rot: 0, have: have.has(src) })) };
+    $('picktitle').textContent = `Pictures from ${e.title || hostOf(u)}`;
+    renderPicks();
+    const d = $('pickdlg'); if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+  }
+  function renderPicks() {
+    const s = pickState; if (!s) return;
+    $('pickgrid').innerHTML = s.items.map((i, n) => `<div class="ptile${i.on ? ' on' : ''}${i.have ? ' have' : ''}">
+      <button type="button" class="pimg" data-pt="${n}" aria-pressed="${i.on || i.have}"${i.have ? ' disabled' : ''} aria-label="${i.have ? 'Already in Media' : 'Picture ' + (n + 1)}"><img src="${esc(i.u)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="transform: rotate(${i.rot}deg)">${i.have ? '<span class="mbadge">In Media</span>' : i.on ? '<span class="pcheck" aria-hidden="true">✓</span>' : ''}</button>
+      ${i.have ? '' : `<button type="button" class="prot" data-prot="${n}" aria-label="Rotate picture ${n + 1}">↻ ${i.rot ? i.rot + '°' : ''}</button>`}</div>`).join('') || '<p class="impline">No pictures found on this page.</p>';
+    const k = s.items.filter(i => i.on).length;
+    $('pickadd').textContent = k ? `Add ${k} to Media` : 'Add to Media';
+    $('pickadd').disabled = !k;
+  }
+  $('pickgrid').addEventListener('click', e => {
+    const s = pickState; if (!s) return;
+    const t = e.target.closest('[data-pt], [data-prot]'); if (!t) return;
+    if (t.dataset.prot != null) { const i = s.items[+t.dataset.prot]; i.rot = (i.rot + 90) % 360; i.on = true; }
+    else { const i = s.items[+t.dataset.pt]; i.on = !i.on; }
+    renderPicks();
+  });
+  const closePicks = () => { pickState = null; const d = $('pickdlg'); if (d.close) d.close(); else d.removeAttribute('open'); };
+  $('pickcancel').addEventListener('click', closePicks);
+  $('pickdlg').addEventListener('cancel', () => { pickState = null; });
+  $('pickadd').addEventListener('click', () => {
+    const s = pickState, p = s && people.get(s.id); if (!p) return;
+    const chosen = s.items.filter(i => i.on && !i.have);
+    p.picks = [...(p.picks || []), ...chosen.map((i, n) => ({ u: i.u, link: s.link, at: Date.now() + n, rot: i.rot }))];
+    touch(s.id); flushSave();
+    logEvent('media', `Added ${chosen.length} picture${chosen.length === 1 ? '' : 's'} from ${hostOf(s.link)} to ${nameOf(s.id)}`);
+    saveMediaFor(pickMsgs(s.id));
+    chosen.forEach(i => { const e = mediaIdx.get(i.u); if (i.rot && isSavedE(e || {})) rotateSaved(i.u, i.rot); });
+    setStatus(`Added ${chosen.length} picture${chosen.length === 1 ? '' : 's'} to ${nameOf(s.id)}'s media.`);
+    closePicks(); renderReader();
+  });
+
+  // Rotation: the saved file itself is turned, so copies and the media folder get it the right way up.
+  const rotating = new Map(); // file -> url
+  function rotateSaved(u, deg) {
+    const e = mediaIdx.get(u); if (!e || !isSavedE(e) || !native || !native.rotateMedia) return;
+    rotating.set(fileOf(e), u); native.rotateMedia(fileOf(e), deg);
+  }
+  function pendingRotation(u) {
+    for (const p of people.values()) { const x = (p.picks || []).find(x => x.u === u && x.rot && !x.rotDone); if (x) return { p, x }; }
+    return null;
+  }
+  window.__tofRotated = (file, ok) => {
+    const u = rotating.get(file); rotating.delete(file);
+    const e = u && mediaIdx.get(u); if (!e) return;
+    const r = pendingRotation(u); if (r) { r.x.rotDone = true; touch(r.p.id); flushSave(); }
+    if (!ok) { setStatus("Couldn't rotate that picture.", true); return; }
+    e.local = e.local.replace(/\?.*$/, '') + '?v=' + Date.now();
+    putAll('media', [e]);
+    copiedTokens.delete(tokenOf(e));
+    if ($('mediadlg').open && viewList[viewAt] && viewList[viewAt].u === u) openMedia(viewList, viewAt);
+    clearTimeout(rr); rr = setTimeout(refreshMedia, 100);
+  };
+
   function select(key) { flushSave(); sel = key; only = ''; renderContacts(); showTab('contact'); renderReader(); window.scrollTo(0, 0); }
   // Contact subtabs: Info, Conversations, Stats.
   let sub = 'info';
@@ -1029,7 +1160,7 @@
   }
   function flushSave() {
     clearTimeout(saveTimer); saveTimer = null;
-    if (dirty.size) { putAll('people', [...dirty].map(id => people.get(id)).filter(Boolean)); dirty.forEach(logEdits); dirty.clear(); }
+    if (dirty.size) { putAll('people', [...dirty].map(id => people.get(id)).filter(Boolean)); dirty.forEach(logEdits); dirty.clear(); snapSoon(); }
   }
   function touch(id) { const p = people.get(id); if (p) { p.updated = Date.now(); dirty.add(id); } }
   function updateField(f, value) {
@@ -1111,6 +1242,9 @@
     if (d.open != null) { logEvent('link', `Opened ${normLink(linksOf(id)[+d.open])} for ${nameOf(id)}`); openLink(linksOf(id)[+d.open]); return; }
     if (d.openurl != null) { logEvent('link', `Opened ${normLink(d.openurl)} for ${nameOf(id)}`); openLink(d.openurl); return; }
     if (d.copy != null) { copyLink(normLink(linksOf(id)[+d.copy]), t); return; }
+    if (d.snapopen != null) { const e = pages[d.snapopen]; if (e && e.file) { logEvent('link', `Opened the saved copy of ${d.snapopen}`); native.openSaved(e.file, e.mime); } return; }
+    if (d.snapagain != null) { snapAgain(d.snapagain); return; }
+    if (d.picks != null) { openPicks(id, d.picks); return; }
     if (d.unlink != null) { updateField('links', linksOf(id).filter((_, i) => i !== +d.unlink)); renderReader(); return; }
     if (d.usename != null) { updateField('name', d.usename); flushSave(); renderContacts(); renderReader(); return; }
     if (d.detach != null) {
@@ -1291,7 +1425,7 @@
     isExample = false;
     await putAll('meta', [{ id: 'localtime', at: Date.now() }, { id: 'people', at: Date.now() }]);
     if (native) { try { native.clearMedia(); } catch (e) {} }
-    messages = []; people.clear(); numbers.clear(); dirty.clear(); fieldDefs = []; mediaIdx.clear(); sel = null;
+    messages = []; people.clear(); numbers.clear(); dirty.clear(); fieldDefs = []; mediaIdx.clear(); pages = {}; sel = null;
     setStatus('Deleted all contacts, conversations and saved media. The log is kept.');
     logEvent('data', 'Cleared all contacts, conversations and saved media');
     render();
@@ -1368,6 +1502,7 @@
     recs.forEach(r => numbers.set(r.contact, { contact: r.contact, person: r.person || null, label: r.label || '', updated: r.updated }));
     media.forEach(m => mediaIdx.set(m.url, m));
     const f = meta.find(m => m.id === 'fields'); if (f) fieldDefs = f.list || [];
+    const pg = meta.find(m => m.id === 'pages'); if (pg) pages = pg.map || {};
     people.forEach(p => snaps.set(p.id, snapOf(p.id)));
     if (!messages.length && !people.size) { messages = exampleData(); isExample = true; exampleContacts(); }
     let ver = ''; try { ver = native && native.version ? native.version() : ''; } catch (e) {}
@@ -1381,7 +1516,8 @@
     render();
     ready();
     readNotify(); syncTimers(); renderTimers();
-    saveMediaFor(messages);
+    saveMediaFor([...messages, ...allPickMsgs()]);
+    snapLinks();
     copyToFolder();
     lookupContacts(false);
   })();
