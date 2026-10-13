@@ -98,7 +98,7 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   </header>
 
   <section class="drop" id="drop" aria-label="Add TextNow exports">
-    <p><strong>Drop TextNow exports here</strong>, one or many. In TextNow on Android, open a conversation, tap Options, then Export Conversation, and share it to Tof (once installed) or save it and choose it here.</p>
+    <p><strong>Drop TextNow exports here</strong>, one or many. In TextNow, open a conversation, tap Options, then Export Conversation, and pick Tof in the Share menu. Or save the file and choose it here.</p>
     <label class="btn solid" for="file">Choose files</label>
     <button class="btn" id="install" type="button" hidden>Install Tof</button>
     <input type="file" id="file" multiple accept=".html,.htm,.txt,text/html,text/plain">
@@ -353,7 +353,11 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
 
 <script>
 (function () {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+  const inAndroidApp = location.hostname === 'appassets.androidplatform.net';
+  if ('serviceWorker' in navigator && !inAndroidApp) navigator.serviceWorker.register('sw.js');
+
+  // The Android app hands over shared exports as {name, text} items.
+  window.__tofReceive = items => window.__tofAdd(items.map(i => new File([i.text], i.name, { type: 'text/html' })));
 
   // Files shared from the Android Share menu land in the service worker's inbox.
   async function readInbox() {
