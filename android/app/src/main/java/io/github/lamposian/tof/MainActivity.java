@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
     private static final int PICK_LOG_FOLDER = 3;
     private static final int PICK_MEDIA_FOLDER = 4;
     private static final int SAVE_MEDIA_AS = 5;
+    private static final int ASK_NOTIFY = 6;
     private static final String LOG_NAME = "tof-log.txt";
     private static final int MAX_BYTES = 20 * 1024 * 1024;
     private static final long MAX_MEDIA_BYTES = 300L * 1024 * 1024;
@@ -64,6 +65,8 @@ public class MainActivity extends Activity {
     private File mediaDir;
     private String pendingLookup;
     private String pendingSaveAs;
+    // A contact to open once the page is ready, from a tapped timer notification.
+    private String pendingOpen;
     private final ExecutorService downloads = Executors.newFixedThreadPool(3);
     // Log file writes happen one at a time, in order.
     private final ExecutorService logIo = Executors.newSingleThreadExecutor();
@@ -136,6 +139,9 @@ public class MainActivity extends Activity {
         });
 
         collectShares(getIntent());
+        collectOpen(getIntent());
+        Timers.ensureChannel(this);
+        Timers.rescheduleAll(this);
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
         else web.loadUrl(START_URL);
     }
@@ -145,7 +151,26 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         collectShares(intent);
+        collectOpen(intent);
         deliverShares();
+    }
+
+    private void collectOpen(Intent intent) {
+        if (intent == null || intent.getStringExtra("openContact") == null) return;
+        pendingOpen = intent.getStringExtra("openContact");
+        String timer = intent.getStringExtra("timer");
+        if (timer != null) {
+            org.json.JSONObject t = Timers.get(this, timer);
+            if (t != null) { try { t.put("done", true); Timers.put(this, timer, t); } catch (Exception ignored) { } }
+        }
+        intent.removeExtra("openContact");
+    }
+
+    private void deliverOpen() {
+        if (!pageReady || pendingOpen == null) return;
+        String js = "window.__tofOpen && window.__tofOpen(" + JSONObject.quote(pendingOpen) + ")";
+        pendingOpen = null;
+        web.evaluateJavascript(js, null);
     }
 
     @Override
@@ -366,6 +391,43 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void buzz() { runOnUiThread(() -> web.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)); }
 
+        /** Sets (or replaces) a contact timer; Android notifies at `at` even if Tof is closed. */
+        @JavascriptInterface
+        public void setTimer(String id, double at, String title, String text, String open) {
+            if (id == null || id.isEmpty()) return;
+            Timers.set(MainActivity.this, id, (long) at, title, text, open);
+        }
+
+        @JavascriptInterface
+        public void cancelTimer(String id) { if (id != null) Timers.cancel(MainActivity.this, id); }
+
+        /** Every timer Android knows about, as JSON {id: {at, done, fired, snoozed}}: snoozes and Done taps happen outside the page. */
+        @JavascriptInterface
+        public String timers() { return Timers.all(MainActivity.this).toString(); }
+
+        /** "on", "off" (blocked or not allowed yet) and whether alarms can be exact. */
+        @JavascriptInterface
+        public String notifyState() {
+            boolean on = ((android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE)).areNotificationsEnabled()
+                    && (android.os.Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED);
+            return (on ? "on" : "off") + (Timers.exact(MainActivity.this) ? "" : ",inexact");
+        }
+
+        /** Asks to show notifications (Android 13+), or opens Tof's notification settings if that was refused before. */
+        @JavascriptInterface
+        public void askNotify() {
+            runOnUiThread(() -> {
+                if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                        && !prefs().getBoolean("askedNotify", false)) {
+                    prefs().edit().putBoolean("askedNotify", true).apply();
+                    requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, ASK_NOTIFY);
+                    return;
+                }
+                Intent i = new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName());
+                try { startActivity(i); } catch (ActivityNotFoundException ignored) { }
+            });
+        }
+
         @JavascriptInterface
         public void clearMedia() {
             File[] files = mediaDir.listFiles();
@@ -376,6 +438,10 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == ASK_NOTIFY) {
+            web.evaluateJavascript("window.__tofNotifyChanged && window.__tofNotifyChanged()", null);
+            return;
+        }
         if (requestCode != ASK_CONTACTS) return;
         String numbers = pendingLookup;
         pendingLookup = null;
@@ -781,6 +847,7 @@ public class MainActivity extends Activity {
     }
 
     private void deliverShares() {
+        deliverOpen();
         if (!pageReady || (pendingShares.isEmpty() && pendingText == null)) return;
         JSONArray items = new JSONArray();
         try {

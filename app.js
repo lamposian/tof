@@ -146,7 +146,7 @@
   // ---- Activity log: every action in Tof, kept in IndexedDB and, when a folder is chosen, in tof-log.txt there ----
   let logs = [];               // newest first: {id, at, kind, text}
   let logFolderName = '';
-  const LOG_KINDS = { app: 'App', import: 'Import', contact: 'Contact', number: 'Number', link: 'Link', field: 'Field', phone: 'Phone', media: 'Media', data: 'Data' };
+  const LOG_KINDS = { app: 'App', import: 'Import', contact: 'Contact', number: 'Number', link: 'Link', field: 'Field', phone: 'Phone', media: 'Media', timer: 'Timer', data: 'Data' };
   const putLog = items => new Promise(res => {
     if (!db || !items.length) return res();
     const t = db.transaction('log', 'readwrite'); const st = t.objectStore('log');
@@ -605,6 +605,7 @@
       : `${ns.length} number${ns.length === 1 ? '' : 's'} · ${fmt.format(msgs.length)} message${msgs.length === 1 ? '' : 's'}${only ? ` with ${only}` : ''}, oldest first.`;
     const active = document.activeElement && $('record').contains(document.activeElement) ? document.activeElement.id : null;
     if (sel) id ? renderPerson(id, msgs) : renderAssign(sel.slice(2), msgs);
+    renderTimers();
     if (active && $(active)) $(active).focus();
     renderConvoStats(msgs);
     // A contact with several numbers can show all their messages together or one number's at a time.
@@ -804,6 +805,145 @@
     renderSettings();
   };
 
+  // ---- Timers: one-off reminders on a contact. Android sets an alarm for each and notifies when it ends. ----
+  const timersOf = id => (people.get(id) || {}).timers || [];
+  const ended = t => !!t.done || t.at <= Date.now();
+  const unit = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  function durText(ms) {
+    const m = Math.round(ms / 6e4), d = Math.floor(m / 1440), h = Math.floor(m % 1440 / 60), mi = m % 60;
+    const parts = [d && unit(d, 'day'), h && unit(h, 'hour'), !d && mi && unit(mi, 'minute')].filter(Boolean);
+    return parts.length ? parts.slice(0, 2).join(', ') : 'less than a minute';
+  }
+  const countdownWord = ms => { const m = Math.round(ms / 6e4); return m % 1440 === 0 ? `${m / 1440}-day` : m % 60 === 0 ? `${m / 60}-hour` : `${m}-minute`; };
+  const timerTitle = (id, t) => `${nameOf(id)}: ${t.note || 'Timer'}`;
+  const timerText = t => t.kind === 'in' ? `Your ${countdownWord(t.dur)} timer ended. Tap to open the conversation.` : `Your timer for ${fullFmt.format(new Date(t.at))} ended. Tap to open the conversation.`;
+  let notifyState = '';
+  function readNotify() { try { notifyState = native && native.notifyState ? native.notifyState() : ''; } catch (e) { notifyState = ''; } }
+  window.__tofNotifyChanged = () => { readNotify(); renderTimers(); };
+
+  function renderTimers() {
+    const id = openId(), box = $('timers');
+    box.hidden = !id || isExample;
+    if (box.hidden) return;
+    const list = [...timersOf(id)].sort((a, b) => (ended(a) - ended(b)) || (ended(a) ? b.at - a.at : a.at - b.at));
+    const now = Date.now();
+    const off = native && native.setTimer && notifyState.startsWith('off') && list.some(t => !ended(t));
+    box.innerHTML = `<div class="cardhead"><h2>Timers</h2><button type="button" class="btn" id="addtimer">Add timer</button></div>
+      ${!native || !native.setTimer ? '<p class="sub">Timers notify you only in the Android app.</p>' : ''}
+      ${off ? '<p class="offer">Notifications are off for Tof, so these timers can\'t alert you. <button type="button" class="btn" id="allownotify">Turn on</button></p>' : ''}
+      ${notifyState.includes('inexact') && list.some(t => !ended(t)) ? '<p class="sub">Android may deliver these a few minutes late.</p>' : ''}
+      ${list.length ? '' : '<p class="sub">No timers. Add one to be reminded about this contact.</p>'}
+      ${list.map(t => { const done = ended(t); return `<div class="trow${done ? ' done' : ''}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a8 8 0 1 1 0 16 8 8 0 0 1 0-16M12 9v4l2.5 2M5 3L2 6M19 3l3 3"/></svg>
+        <div class="tmain"><b>${esc(t.note || 'Timer')}</b>
+          <span class="twhen">${done ? `Ended ${esc(fullFmt.format(new Date(t.at)))}` : `In ${esc(durText(t.at - now))} · ${esc(fullFmt.format(new Date(t.at)))}`}</span>
+          <small>${t.kind === 'in' ? `Countdown of ${esc(durText(t.dur))}` : 'Set for a date'}, set ${esc(dayFmt.format(new Date(t.created)))}${t.snoozed ? ` · snoozed ${t.snoozed === 1 ? 'once' : t.snoozed + ' times'}` : ''}</small></div>
+        <button type="button" class="btn" data-tdel="${esc(t.id)}">${done ? 'Remove' : 'Cancel'}</button></div>`; }).join('')}`;
+  }
+  // Countdowns tick while the Info subtab is open.
+  setInterval(() => { if (!$('view-contact').hidden && sub === 'info' && openId() && timersOf(openId()).length) renderTimers(); }, 30000);
+
+  function saveTimers(id, list) { const p = people.get(id); if (!p) return; p.timers = list; touch(id); flushSave(); }
+  function startTimer(id, t) {
+    saveTimers(id, [...timersOf(id), t]);
+    if (native && native.setTimer) native.setTimer(t.id, t.at, timerTitle(id, t), timerText(t), 'p:' + id);
+    logEvent('timer', `Started ${t.kind === 'in' ? `a ${durText(t.dur)} timer` : `a timer for ${fullFmt.format(new Date(t.at))}`} on ${nameOf(id)}${t.note ? `: ${t.note}` : ''}`);
+    if (native && native.askNotify && notifyState.startsWith('off')) native.askNotify();
+  }
+  function dropTimers(id) { timersOf(id).forEach(t => { if (native && native.cancelTimer) native.cancelTimer(t.id); }); }
+
+  // Snoozes and Done taps happen in the notification, so the page takes Android's copy as current.
+  function syncTimers() {
+    if (!native || !native.timers || isExample) return;
+    let them = {}; try { them = JSON.parse(native.timers()) || {}; } catch (e) {}
+    const known = new Set();
+    people.forEach(p => {
+      let changed = false;
+      (p.timers || []).forEach(t => {
+        known.add(t.id);
+        const n = them[t.id];
+        if (!n) { if (!ended(t)) native.setTimer(t.id, t.at, timerTitle(p.id, t), timerText(t), 'p:' + p.id); return; }
+        if (n.at && n.at !== t.at) { t.at = n.at; t.snoozed = n.snoozed || (t.snoozed || 0) + 1; changed = true; logEvent('timer', `Snoozed ${nameOf(p.id)}${t.note ? `: ${t.note}` : ''} for an hour`); }
+        if (n.done && !t.done) { t.done = true; changed = true; }
+        // Keep the notification's wording in step with a renamed contact.
+        if (!ended(t) && n.title !== timerTitle(p.id, t)) native.setTimer(t.id, t.at, timerTitle(p.id, t), timerText(t), 'p:' + p.id);
+      });
+      if (changed) touch(p.id);
+    });
+    Object.keys(them).forEach(k => { if (!known.has(k)) native.cancelTimer(k); });
+    flushSave();
+  }
+
+  $('timers').addEventListener('click', e => {
+    const id = openId(); if (!id) return;
+    const t = e.target.closest('button'); if (!t) return;
+    if (t.id === 'addtimer') return openTimerDlg(id);
+    if (t.id === 'allownotify') return native.askNotify();
+    if (t.dataset.tdel) {
+      const tm = timersOf(id).find(x => x.id === t.dataset.tdel); if (!tm) return;
+      if (native && native.cancelTimer) native.cancelTimer(tm.id);
+      saveTimers(id, timersOf(id).filter(x => x.id !== tm.id));
+      if (!ended(tm)) logEvent('timer', `Cancelled the timer on ${nameOf(id)}${tm.note ? `: ${tm.note}` : ''}`);
+      renderTimers();
+    }
+  });
+
+  // Add timer dialog: a countdown or a date and time.
+  let tKind = 'in';
+  const PRESETS = [['1 hour', 60], ['4 hours', 240], ['1 day', 1440], ['3 days', 4320], ['1 week', 10080], ['2 weeks', 20160]];
+  const dateVal = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  function timerAt() {
+    if (tKind === 'in') {
+      const mins = (+$('tdays').value || 0) * 1440 + (+$('thours').value || 0) * 60 + (+$('tmins').value || 0);
+      return mins > 0 ? { at: Date.now() + mins * 6e4, dur: mins * 6e4 } : null;
+    }
+    const [y, mo, d] = ($('tdate').value || '').split('-').map(Number), [h, mi] = ($('ttime').value || '').split(':').map(Number);
+    if (!y || isNaN(h)) return null;
+    const at = new Date(y, mo - 1, d, h, mi || 0).getTime();
+    return at > Date.now() ? { at, dur: 0 } : { past: true };
+  }
+  function renderTimerDlg() {
+    ['in', 'on'].forEach(k => { $('tk-' + k).setAttribute('aria-pressed', tKind === k); $('tpane-' + k).hidden = tKind !== k; });
+    const mins = (+$('tdays').value || 0) * 1440 + (+$('thours').value || 0) * 60 + (+$('tmins').value || 0);
+    $('tpresets').querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.min === mins));
+    const r = timerAt();
+    $('tpreview').textContent = r && r.at ? `Ends ${fullFmt.format(new Date(r.at))}. Tof will notify you then, even if it's closed.` : r && r.past ? 'That time has already passed.' : tKind === 'in' ? 'Choose how long.' : 'Choose a date and time.';
+    $('tpreview').classList.toggle('warn', !!(r && r.past));
+    $('tstart').disabled = !(r && r.at);
+  }
+  function openTimerDlg(id) {
+    const d = $('timerdlg'); d.dataset.id = id;
+    $('timertitle').textContent = `New timer for ${nameOf(id)}`;
+    $('tnote').value = ''; tKind = 'in';
+    $('tdays').value = 1; $('thours').value = 0; $('tmins').value = 0;
+    const tomorrow = new Date(Date.now() + 864e5); $('tdate').value = dateVal(tomorrow); $('tdate').min = dateVal(new Date()); $('ttime').value = '09:00';
+    $('tpresets').innerHTML = PRESETS.map(([t, m]) => `<button type="button" class="chip pick" data-min="${m}">${t}</button>`).join('');
+    renderTimerDlg();
+    if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+    $('tnote').focus();
+  }
+  const closeTimerDlg = () => { const d = $('timerdlg'); if (d.close) d.close(); else d.removeAttribute('open'); };
+  $('tk-in').addEventListener('click', () => { tKind = 'in'; renderTimerDlg(); });
+  $('tk-on').addEventListener('click', () => { tKind = 'on'; renderTimerDlg(); });
+  $('tpresets').addEventListener('click', e => { const b = e.target.closest('[data-min]'); if (!b) return; const m = +b.dataset.min; $('tdays').value = Math.floor(m / 1440); $('thours').value = Math.floor(m % 1440 / 60); $('tmins').value = m % 60; renderTimerDlg(); });
+  ['tdays', 'thours', 'tmins', 'tdate', 'ttime'].forEach(k => $(k).addEventListener('input', renderTimerDlg));
+  $('tcancel').addEventListener('click', closeTimerDlg);
+  $('timerdlg').addEventListener('submit', e => e.preventDefault());
+  $('tstart').addEventListener('click', () => {
+    const id = $('timerdlg').dataset.id, r = timerAt(); if (!id || !r || !r.at) return;
+    startTimer(id, { id: newId(), note: $('tnote').value.trim(), kind: tKind, at: r.at, dur: r.dur, created: Date.now() });
+    closeTimerDlg(); renderTimers();
+  });
+
+  // A tapped timer notification opens that contact's conversation at the newest message.
+  window.__tofOpen = async key => {
+    await loaded;
+    syncTimers();
+    if (!entries().ppl.concat(entries().loose).some(e => e.key === key)) return;
+    select(key); showSub('convos');
+    requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
+  };
+
   function select(key) { flushSave(); sel = key; only = ''; renderContacts(); showTab('contact'); renderReader(); window.scrollTo(0, 0); }
   // Contact subtabs: Info, Conversations, Stats.
   let sub = 'info';
@@ -948,6 +1088,7 @@
       if (!armed(t, 'Tap again to delete')) return;
       const name = nameOf(id);
       numbersOf(id).forEach(detach);
+      dropTimers(id);
       people.delete(id); dirty.delete(id); delOne('people', id);
       setStatus(`Deleted ${name}. Its messages are kept under New numbers.`);
       logEvent('contact', `Deleted contact ${name}`);
@@ -1092,6 +1233,7 @@
       return;
     }
     clearArmed = 0; btn.textContent = 'Clear all';
+    people.forEach(p => dropTimers(p.id));
     await clearAll();
     isExample = false;
     await putAll('meta', [{ id: 'localtime', at: Date.now() }, { id: 'people', at: Date.now() }]);
@@ -1110,6 +1252,7 @@
     if (document.hidden) flushSave();
     // Back from the Contacts app: check again so a contact that was just saved stops being offered.
     else if (savedOffer) { savedOffer = false; lookupContacts(false); }
+    if (!document.hidden && !isExample) { readNotify(); syncTimers(); renderTimers(); }
   });
 
   // Before contacts existed, each number had its own record. Numbers whose records hold anything
@@ -1184,6 +1327,7 @@
     try { { const t = localStorage.getItem('tof-tab'); if (['contacts', 'contact', 'media', 'stats', 'log', 'settings'].includes(t)) showTab(t); } } catch (e) {}
     render();
     ready();
+    readNotify(); syncTimers(); renderTimers();
     saveMediaFor(messages);
     copyToFolder();
     lookupContacts(false);

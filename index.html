@@ -192,6 +192,33 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .jumpnote[hidden] { display: none; }
 .jumpnote .linkbtn { color: #9fdde3; font-weight: 600; text-decoration: none; white-space: nowrap; }
 .bottomnav button { font-size: 0.7rem !important; min-width: 0; }
+.timers { margin: 0 0 12px; display: grid; gap: 8px; }
+.timers h2 { margin: 0; }
+.timers .offer { margin: 0; }
+.trow { display: flex; align-items: flex-start; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.trow svg { flex: none; width: 22px; height: 22px; margin-top: 2px; fill: none; stroke: var(--you); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.trow .tmain { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.trow .tmain b { overflow-wrap: anywhere; }
+.trow .twhen { font-size: 0.88rem; font-weight: 600; color: var(--you); }
+.trow small { font-size: 0.78rem; color: var(--muted); }
+.trow.done { opacity: .7; }
+.trow.done svg { stroke: var(--muted); }
+.trow.done .twhen { font-weight: 400; color: var(--muted); }
+.trow .btn { flex: none; }
+.timerdlg form { display: grid; gap: 12px; }
+.timerdlg h2 { margin: 0; }
+.timerdlg label { display: flex; flex-direction: column; gap: 4px; font-size: 0.82rem; color: var(--muted); }
+.timerdlg input { font: inherit; font-size: 1rem; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.seg { display: flex; gap: 4px; padding: 4px; background: var(--bg); border-radius: 10px; }
+.seg button { flex: 1; font: inherit; font-weight: 600; font-size: 0.9rem; padding: 8px 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--you); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.tnums { display: flex; gap: 8px; }
+.tnums label { flex: 1; min-width: 0; }
+.tnums input { font-family: var(--mono); width: 100%; box-sizing: border-box; }
+#tpresets { margin: 0 0 8px; }
+.tpreview { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--you-soft); font-size: 0.9rem; }
+.tpreview.warn { background: var(--them-soft, #f6e6d6); color: var(--them); }
+.timerdlg .dlgfoot { gap: 8px; }
 .bottomnav .ico { width: 44px !important; }
 .version { text-align: center; color: var(--muted); font-size: 0.8rem; margin: 0; }
 .linkbtn { font: inherit; color: var(--you); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
@@ -270,6 +297,7 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
       </nav>
       <div class="chips only" id="only" role="group" aria-label="Show messages from" hidden></div>
       <div class="pane" id="pane-info" role="tabpanel" aria-labelledby="sub-info">
+        <section class="card timers" id="timers" aria-label="Timers" hidden></section>
         <form class="record" id="record" autocomplete="off"></form>
       </div>
       <div class="pane" id="pane-convos" role="tabpanel" aria-labelledby="sub-convos" hidden>
@@ -386,6 +414,23 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   <div class="mediastage"><button type="button" class="mstep" id="mediaprev" aria-label="Previous">‹</button><div id="mediaview"></div><button type="button" class="mstep" id="medianext" aria-label="Next">›</button></div>
   <p class="impline" id="mediacap"></p>
   <div class="dlgfoot"><button type="button" class="btn" id="mediasave" hidden>Save a copy</button><button type="button" class="btn solid" id="mediashow">Show in conversation</button></div>
+</dialog>
+
+<dialog class="dlg timerdlg" id="timerdlg" aria-labelledby="timertitle">
+  <form method="dialog" autocomplete="off">
+    <h2 id="timertitle">New timer</h2>
+    <label for="tnote">What's it for?<input id="tnote" placeholder="Like: ask about the lease" maxlength="120"></label>
+    <div class="seg" role="group" aria-label="Kind of timer"><button type="button" id="tk-in" aria-pressed="true">Countdown</button><button type="button" id="tk-on" aria-pressed="false">Date and time</button></div>
+    <div id="tpane-in">
+      <div class="chips only" id="tpresets" role="group" aria-label="Quick choices"></div>
+      <div class="tnums"><label for="tdays">Days<input id="tdays" type="number" min="0" max="365" inputmode="numeric"></label><label for="thours">Hours<input id="thours" type="number" min="0" max="23" inputmode="numeric"></label><label for="tmins">Minutes<input id="tmins" type="number" min="0" max="59" inputmode="numeric"></label></div>
+    </div>
+    <div id="tpane-on" hidden>
+      <div class="tnums"><label for="tdate">Date<input id="tdate" type="date"></label><label for="ttime">Time<input id="ttime" type="time"></label></div>
+    </div>
+    <p class="tpreview" id="tpreview"></p>
+    <div class="dlgfoot"><button type="button" class="btn" id="tcancel">Cancel</button><button type="button" class="btn solid" id="tstart">Start timer</button></div>
+  </form>
 </dialog>
 
 <dialog class="dlg" id="importdlg" aria-labelledby="importtitle">
