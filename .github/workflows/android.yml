@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# One build at a time, so two runs never publish the APK at once.
+concurrency:
+  group: android-apk
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
