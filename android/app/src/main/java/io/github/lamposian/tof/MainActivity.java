@@ -68,8 +68,68 @@ public class MainActivity extends Activity {
     private final java.util.ArrayDeque<String> snapQueue = new java.util.ArrayDeque<>();
     private WebView snapView;
     private String snapUrl;
+    private boolean snapSaving;
     private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
-    private final Runnable snapSettle = this::saveSnap, snapGiveUp = this::saveSnap;
+    private final Runnable snapSettle = this::scrollSnap, snapGiveUp = this::saveSnap, snapScrolled = this::saveSnap;
+
+    /** Scrolls the page top to bottom so pictures that only load when scrolled into view get loaded. */
+    private static final String SCROLL_JS = """
+        (function () {
+          var y = 0, n = 0;
+          var t = setInterval(function () {
+            y += Math.max(400, innerHeight * 0.8); scrollTo(0, y); n++;
+            if (y >= document.documentElement.scrollHeight || n > 40) { clearInterval(t); scrollTo(0, 0); }
+          }, 150);
+        })()""";
+
+    /**
+     * Every picture on the page worth offering: loaded images (not icons), lazy-load attributes, srcset and
+     * <picture> sources (largest), CSS backgrounds of big elements, links straight to picture files, and the
+     * page's share image. Unloaded images are kept, since their size isn't known.
+     */
+    private static final String PICS_JS = """
+        (function () {
+          var out = [], seen = {};
+          function add(u) {
+            if (!u) return;
+            try { u = new URL(String(u).trim(), location.href).href; } catch (e) { return; }
+            if (!/^https?:/.test(u) || /\.svg(\?|#|$)/i.test(u) || seen[u]) return;
+            seen[u] = 1; out.push(u);
+          }
+          function best(set) {
+            if (!set) return '';
+            var top = '', w = -1;
+            set.split(/,\s+/).forEach(function (part) {
+              var bits = part.trim().split(/\s+/), v = parseFloat(bits[1]) || 1;
+              if (bits[0] && v > w) { w = v; top = bits[0]; }
+            });
+            return top;
+          }
+          ['meta[property="og:image"]', 'meta[name="twitter:image"]', 'meta[property="og:image:url"]'].forEach(function (q) {
+            var m = document.querySelector(q); if (m) add(m.content);
+          });
+          var l = document.querySelector('link[rel="image_src"]'); if (l) add(l.href);
+          Array.prototype.forEach.call(document.images, function (i) {
+            var small = (i.complete && i.naturalWidth > 0 && (i.naturalWidth < 100 || i.naturalHeight < 100)) || (i.width > 0 && i.width < 60 && i.height < 60);
+            var lazy = i.getAttribute('data-src') || i.getAttribute('data-lazy-src') || i.getAttribute('data-original') || i.getAttribute('data-url') || best(i.getAttribute('data-srcset'));
+            if (lazy) add(lazy);
+            if (!small) { add(best(i.getAttribute('srcset')) || i.currentSrc || i.src); }
+          });
+          Array.prototype.forEach.call(document.querySelectorAll('picture source[srcset], picture source[data-srcset]'), function (s) {
+            add(best(s.getAttribute('srcset') || s.getAttribute('data-srcset')));
+          });
+          Array.prototype.forEach.call(document.querySelectorAll('a[href]'), function (a) {
+            if (/\.(jpe?g|png|webp|gif|heic|avif)(\?|#|$)/i.test(a.getAttribute('href'))) add(a.getAttribute('href'));
+          });
+          Array.prototype.forEach.call(document.querySelectorAll('body *'), function (el) {
+            if (out.length > 300) return;
+            var r = el.getBoundingClientRect();
+            if (r.width < 150 || r.height < 150) return;
+            var bg = getComputedStyle(el).backgroundImage, m = bg && bg.match(/url\(["']?([^"')]+)["']?\)/);
+            if (m) add(m[1]);
+          });
+          return JSON.stringify(out.slice(0, 200));
+        })()""";
     private String pendingLookup;
     private String pendingSaveAs;
     // A contact to open once the page is ready, from a tapped timer notification.
@@ -476,6 +536,29 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** Sends the content hash of saved files (a JSON array of names) to __tofMediaHash(file, hash). */
+        @JavascriptInterface
+        public void hashMedia(String filesJson) {
+            downloads.execute(() -> {
+                try {
+                    JSONArray files = new JSONArray(filesJson);
+                    for (int i = 0; i < files.length(); i++) {
+                        String file = files.getString(i);
+                        if (file.contains("/")) continue;
+                        String h = fileHash(new File(mediaDir, file));
+                        String js = "window.__tofMediaHash && window.__tofMediaHash(" + JSONObject.quote(file) + "," + JSONObject.quote(h) + ")";
+                        web.post(() -> web.evaluateJavascript(js, null));
+                    }
+                } catch (Exception ignored) { }
+            });
+        }
+
+        /** Removes a saved picture or video that turned out to be a copy of another. */
+        @JavascriptInterface
+        public void deleteMedia(String file) {
+            if (file != null && !file.contains("/")) new File(mediaDir, file).delete();
+        }
+
         @JavascriptInterface
         public void deleteSaved(String file) {
             if (file != null && !file.contains("/")) new File(pagesDir, file).delete();
@@ -622,10 +705,10 @@ public class MainActivity extends Activity {
         if (tree != null) {
             String parent = DocumentsContract.getTreeDocumentId(tree);
             Uri parentDoc = DocumentsContract.buildDocumentUriUsingTree(tree, parent);
-            List<String> have = new ArrayList<>();
-            String[] cols = { DocumentsContract.Document.COLUMN_DISPLAY_NAME };
+            List<String> have = new ArrayList<>(), ids = new ArrayList<>();
+            String[] cols = { DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_DOCUMENT_ID };
             try (Cursor c = getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent), cols, null, null, null)) {
-                while (c != null && c.moveToNext()) if (c.getString(0) != null) have.add(c.getString(0));
+                while (c != null && c.moveToNext()) if (c.getString(0) != null) { have.add(c.getString(0)); ids.add(c.getString(1)); }
             } catch (Exception ignored) { }
             try {
                 JSONArray items = new JSONArray(itemsJson);
@@ -636,6 +719,15 @@ public class MainActivity extends Activity {
                     if (file.isEmpty() || file.contains("/") || token.isEmpty() || !src.isFile()) continue;
                     boolean present = false;
                     for (String h : have) if (h.contains(token)) { present = true; break; }
+                    String replace = it.optString("replace");
+                    if (!present && !replace.isEmpty()) {
+                        for (int k = have.size() - 1; k >= 0; k--) {
+                            if (!have.get(k).contains(replace)) continue;
+                            try { DocumentsContract.deleteDocument(getContentResolver(), DocumentsContract.buildDocumentUriUsingTree(tree, ids.get(k))); } catch (Exception ignored) { }
+                            have.remove(k);
+                            ids.remove(k);
+                        }
+                    }
                     if (!present) {
                         Uri dest = null;
                         try { dest = DocumentsContract.createDocument(getContentResolver(), parentDoc, mimeForExt(file), name); } catch (Exception ignored) { }
@@ -645,6 +737,7 @@ public class MainActivity extends Activity {
                             continue;
                         }
                         have.add(name);
+                        ids.add("");
                         made++;
                     }
                     done.put(token);
@@ -720,7 +813,7 @@ public class MainActivity extends Activity {
         File[] existing = mediaDir.listFiles((dir, name) -> name.startsWith(base + "."));
         if (existing != null && existing.length > 0) {
             File f = existing[0];
-            report(url, "saved", f.getName(), mimeForExt(f.getName()), f.length());
+            report(url, "saved", f.getName(), mimeForExt(f.getName()), f.length(), "", "", fileHash(f));
             return;
         }
         HttpURLConnection conn = null;
@@ -753,7 +846,7 @@ public class MainActivity extends Activity {
                 out.close();
                 File dest = new File(mediaDir, base + "." + extFor(mime));
                 if (!tmp.renameTo(dest)) throw new Exception("rename failed");
-                report(url, "saved", dest.getName(), mime, total, etag, lastMod);
+                report(url, "saved", dest.getName(), mime, total, etag, lastMod, fileHash(dest));
             }
         } catch (Exception e) {
             tmp.delete();
@@ -764,10 +857,11 @@ public class MainActivity extends Activity {
     }
 
     private void report(String url, String status, String file, String mime, long size) { report(url, status, file, mime, size, "", ""); }
-    private void report(String url, String status, String file, String mime, long size, String etag, String lastMod) {
+    private void report(String url, String status, String file, String mime, long size, String etag, String lastMod) { report(url, status, file, mime, size, etag, lastMod, ""); }
+    private void report(String url, String status, String file, String mime, long size, String etag, String lastMod, String hash) {
         String local = file.isEmpty() ? "" : "https://" + HOST + "/media/" + file;
         String js = "window.__tofMediaDone && window.__tofMediaDone(" + JSONObject.quote(url) + "," + JSONObject.quote(status) + ","
-                + JSONObject.quote(local) + "," + JSONObject.quote(mime) + "," + size + "," + JSONObject.quote(etag) + "," + JSONObject.quote(lastMod) + ")";
+                + JSONObject.quote(local) + "," + JSONObject.quote(mime) + "," + size + "," + JSONObject.quote(etag) + "," + JSONObject.quote(lastMod) + "," + JSONObject.quote(hash) + ")";
         web.post(() -> web.evaluateJavascript(js, null));
     }
 
@@ -827,6 +921,7 @@ public class MainActivity extends Activity {
     private void nextSnap() {
         if (snapView != null || snapQueue.isEmpty()) return;
         snapUrl = snapQueue.poll();
+        snapSaving = false;
         snapView = new WebView(this);
         WebSettings s = snapView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -834,7 +929,10 @@ public class MainActivity extends Activity {
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setLoadsImagesAutomatically(true);
-        snapView.layout(0, 0, 1080, 2400);
+        // Attached but moved off screen, so the page behaves as if it's showing (lazy pictures load) without being seen.
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+        addContentView(snapView, new android.view.ViewGroup.LayoutParams(dm.widthPixels, dm.heightPixels));
+        snapView.setTranslationX(dm.widthPixels * 3f);
         snapView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
@@ -854,22 +952,30 @@ public class MainActivity extends Activity {
                 return !("http".equals(scheme) || "https".equals(scheme));
             }
         });
-        ui.postDelayed(snapGiveUp, 45000);
+        ui.postDelayed(snapGiveUp, 60000);
         snapView.loadUrl(snapUrl);
     }
 
-    private void saveSnap() {
+    private void scrollSnap() {
         if (snapView == null) return;
+        ui.removeCallbacks(snapSettle);
+        snapView.evaluateJavascript(SCROLL_JS, null);
+        // ~40 steps of 150 ms, then a moment for the last pictures to arrive.
+        ui.removeCallbacks(snapScrolled);
+        ui.postDelayed(snapScrolled, 8000);
+    }
+
+    private void saveSnap() {
+        if (snapView == null || snapSaving) return;
+        snapSaving = true;
+        ui.removeCallbacks(snapScrolled);
         ui.removeCallbacks(snapSettle);
         ui.removeCallbacks(snapGiveUp);
         String name = "p-" + sha1(snapUrl).substring(0, 10) + "-" + System.currentTimeMillis() + ".mht";
         String title = snapView.getTitle() == null ? "" : snapView.getTitle();
         // The page's real pictures (not icons), so Bob can pick some for the contact's media.
-        String pics = "(function(){var s=new Set();var m=document.querySelector('meta[property=\"og:image\"]');if(m&&m.content)s.add(new URL(m.content,location.href).href);"
-                + "Array.prototype.forEach.call(document.images,function(i){var u=i.currentSrc||i.src;if(/^https?:/.test(u)&&i.naturalWidth>=150&&i.naturalHeight>=150)s.add(u);});"
-                + "return JSON.stringify(Array.from(s).slice(0,60));})()";
         WebView view = snapView;
-        view.evaluateJavascript(pics, found -> {
+        view.evaluateJavascript(PICS_JS, found -> {
             if (snapView != view) return;
             String images = "[]";
             try { images = new JSONArray(new org.json.JSONTokener(found).nextValue().toString()).toString(); } catch (Exception ignored) { }
@@ -886,7 +992,9 @@ public class MainActivity extends Activity {
         if (snapView == null) return;
         ui.removeCallbacks(snapSettle);
         ui.removeCallbacks(snapGiveUp);
+        ui.removeCallbacks(snapScrolled);
         String url = snapUrl;
+        if (snapView.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) snapView.getParent()).removeView(snapView);
         File f = name.isEmpty() ? null : new File(pagesDir, name);
         snapView.stopLoading();
         snapView.destroy();
@@ -903,30 +1011,59 @@ public class MainActivity extends Activity {
         web.post(() -> web.evaluateJavascript(js, null));
     }
 
+    /**
+     * Rewrites a saved picture turned by `degrees` from how it looks on screen. Phone photos often store
+     * their pixels sideways with an EXIF "orientation" tag that viewers obey, so that tag is applied first
+     * and dropped from the new file; otherwise the turn would cancel out against it.
+     */
     private static boolean rotateFile(File f, int degrees) {
-        int d = ((degrees % 360) + 360) % 360;
-        if (!f.isFile() || d == 0) return d == 0;
+        if (!f.isFile()) return false;
         String name = f.getName().toLowerCase(Locale.US);
-        android.graphics.Bitmap.CompressFormat fmt = name.endsWith(".png") ? android.graphics.Bitmap.CompressFormat.PNG
-                : name.endsWith(".webp") ? android.graphics.Bitmap.CompressFormat.WEBP
-                : name.endsWith(".jpg") ? android.graphics.Bitmap.CompressFormat.JPEG : null;
-        if (fmt == null) return false;
+        int exif = 0;
+        try {
+            switch (new android.media.ExifInterface(f.getPath()).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
+                case android.media.ExifInterface.ORIENTATION_ROTATE_90: exif = 90; break;
+                case android.media.ExifInterface.ORIENTATION_ROTATE_180: exif = 180; break;
+                case android.media.ExifInterface.ORIENTATION_ROTATE_270: exif = 270; break;
+                default: break;
+            }
+        } catch (Exception ignored) { }
+        int d = (((degrees + exif) % 360) + 360) % 360;
         android.graphics.Bitmap src = android.graphics.BitmapFactory.decodeFile(f.getPath());
         if (src == null) return false;
         android.graphics.Matrix m = new android.graphics.Matrix();
         m.postRotate(d);
-        android.graphics.Bitmap out = android.graphics.Bitmap.createBitmap(src, 0, 0, src.getWidth(), src.getHeight(), m, true);
+        android.graphics.Bitmap out = d == 0 ? src : android.graphics.Bitmap.createBitmap(src, 0, 0, src.getWidth(), src.getHeight(), m, true);
+        // PNG and WebP keep their format; everything else (JPEG, HEIC, GIF) is written as JPEG.
+        android.graphics.Bitmap.CompressFormat fmt = name.endsWith(".png") ? android.graphics.Bitmap.CompressFormat.PNG
+                : name.endsWith(".webp") ? android.graphics.Bitmap.CompressFormat.WEBP : android.graphics.Bitmap.CompressFormat.JPEG;
         File tmp = new File(f.getPath() + ".rot");
+        boolean ok;
         try (OutputStream o = new FileOutputStream(tmp)) {
-            if (!out.compress(fmt, 92, o)) return false;
+            ok = out.compress(fmt, 92, o);
         } catch (Exception e) {
-            tmp.delete();
-            return false;
+            ok = false;
         } finally {
             if (out != src) out.recycle();
             src.recycle();
         }
+        if (!ok) { tmp.delete(); return false; }
         return tmp.renameTo(f);
+    }
+
+    /** SHA-1 of a file's bytes, so the same picture saved from two links is recognised. */
+    private static String fileHash(File f) {
+        try (InputStream in = new java.io.FileInputStream(f)) {
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            StringBuilder sb = new StringBuilder();
+            for (byte x : md.digest()) sb.append(String.format(Locale.US, "%02x", x));
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private static String header(HttpURLConnection c, String name) { String v = c.getHeaderField(name); return v == null ? "" : v; }

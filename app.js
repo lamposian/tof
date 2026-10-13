@@ -275,7 +275,7 @@
     if (!native || !native.checkMedia || isExample) return;
     urls.forEach(u => {
       const e = mediaIdx.get(u);
-      if (!e || e.status !== 'saved' || e.online === false || checking.has(u) || Date.now() - (e.checkedAt || 0) < WEEK) return;
+      if (!e || e.status !== 'saved' || e.online === false || e.turns || checking.has(u) || Date.now() - (e.checkedAt || 0) < WEEK) return;
       checking.add(u);
       try { native.checkMedia(u, e.etag || '', e.lastMod || ''); } catch (err) { checking.delete(u); }
     });
@@ -296,12 +296,36 @@
     putAll('media', [e]);
     clearTimeout(rr); rr = setTimeout(refreshMedia, 300);
   };
+  // ---- Duplicates: identical files (same content hash) are kept once ----
+  const shown = e => e && e.dupOf ? mediaIdx.get(e.dupOf) || e : e;
+  let dupTally = 0, dupLogT;
+  function dedupe(e) {
+    if (!e || !e.hash || e.dupOf || e.status !== 'saved') return;
+    const o = [...mediaIdx.values()].find(x => x !== e && x.url !== e.url && x.hash === e.hash && x.status === 'saved' && !x.dupOf);
+    if (!o) return;
+    if (native && native.deleteMedia && fileOf(e) && fileOf(e) !== fileOf(o)) native.deleteMedia(fileOf(e));
+    e.dupOf = o.url; e.local = o.local;
+    dupTally++; clearTimeout(dupLogT);
+    dupLogT = setTimeout(() => { logEvent('media', `Kept one copy of ${fmt.format(dupTally)} duplicate picture${dupTally === 1 ? '' : 's'} or video${dupTally === 1 ? '' : 's'}`); dupTally = 0; }, 3000);
+  }
+  // Files saved before duplicates were tracked get their hash once.
+  function hashOld() {
+    if (!native || !native.hashMedia || isExample) return;
+    const files = [...new Set([...mediaIdx.values()].filter(e => isSavedE(e) && !e.hash && !e.dupOf).map(fileOf))];
+    for (let k = 0; k < files.length; k += 100) native.hashMedia(JSON.stringify(files.slice(k, k + 100)));
+  }
+  window.__tofMediaHash = (file, hash) => {
+    if (!hash) return;
+    const list = [...mediaIdx.values()].filter(e => !e.dupOf && fileOf(e) === file && !e.hash);
+    list.forEach(e => { e.hash = hash; dedupe(e); });
+    if (list.length) { putAll('media', list); clearTimeout(rr); rr = setTimeout(refreshMedia, 300); }
+  };
   function logMedia() {
     if (mediaTally.saved) logEvent('media', `Saved ${fmt.format(mediaTally.saved)} picture${mediaTally.saved === 1 ? '' : 's'} or video${mediaTally.saved === 1 ? '' : 's'} on the phone`);
     if (mediaTally.gone) logEvent('media', `${fmt.format(mediaTally.gone)} picture${mediaTally.gone === 1 ? '' : 's'} or video${mediaTally.gone === 1 ? '' : 's'} had already expired at TextNow`);
     mediaTally.saved = mediaTally.gone = 0;
   }
-  window.__tofMediaDone = (url, status, local, mime, size, etag, lastMod) => {
+  window.__tofMediaDone = (url, status, local, mime, size, etag, lastMod, hash) => {
     pendingMedia.delete(url);
     const prev = mediaIdx.get(url) || {};
     // A copy already on the phone always wins over a later failed or expired check.
@@ -309,16 +333,18 @@
     const fresh = status === 'saved' && !!etag;
     const e = { ...prev, url, status, local: local || '', mime: mime || '', size: size || 0, tries: (prev.tries || 0) + (status === 'failed' ? 1 : 0),
       savedAt: prev.status === 'saved' && prev.local === local ? prev.savedAt : Date.now(),
-      etag: etag || prev.etag || '', lastMod: lastMod || prev.lastMod || '', checkedAt: fresh ? Date.now() : prev.checkedAt || 0, online: status === 'gone' ? false : fresh ? true : prev.online };
+      etag: etag || prev.etag || '', lastMod: lastMod || prev.lastMod || '', checkedAt: fresh ? Date.now() : prev.checkedAt || 0, online: status === 'gone' ? false : fresh ? true : prev.online,
+      hash: hash || (prev.local === local ? prev.hash : '') || '', dupOf: prev.local === local ? prev.dupOf : undefined };
     mediaIdx.set(url, e);
+    if (status === 'saved') dedupe(e);
     putAll('media', [e]);
-    if (status === 'saved') { copySoon(); const r = pendingRotation(url); if (r) setTimeout(() => rotateSaved(url, r.x.rot), 0); }
+    if (status === 'saved') { copySoon(); const r = pendingRotation(url); if (r && !r.x.rotDone) { r.x.rotDone = true; touch(r.p.id); setTimeout(() => rotateSaved(url, r.x.rot), 0); } }
     if (status === 'saved' || status === 'gone') { mediaTally[status]++; clearTimeout(mediaLogT); mediaLogT = setTimeout(logMedia, 3000); }
     clearTimeout(rr); rr = setTimeout(refreshMedia, 300);
   };
 
   function mediaHtml(u) {
-    const e = mediaIdx.get(u);
+    const e = shown(mediaIdx.get(u));
     if (e && e.status === 'notmedia') return `<a class="link" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`;
     if (e && e.status === 'gone') return `<span class="link gone">Picture or video expired at TextNow before Tof could save it</span>`;
     const saved = e && e.status === 'saved' && e.local;
@@ -452,7 +478,7 @@
     $('logfolder').innerHTML = logFolderName ? `Kept in <b>${esc(logFolderName)}</b> as tof-log.txt.` : 'Only inside Tof right now, so uninstalling would delete it.';
     $('pickfolder').textContent = logFolderName ? 'Change folder' : 'Choose folder';
     $('mediacard').hidden = !native || !native.pickMediaFolder;
-    const savedN = [...mediaIdx.values()].filter(isSavedE).length;
+    const savedN = [...mediaIdx.values()].filter(e => isSavedE(e) && !e.dupOf).length;
     $('mediafolder').innerHTML = mediaFolderName ? `Copies go to <b>${esc(mediaFolderName)}</b>. ${fmt.format(Math.min(copiedTokens.size, savedN))} of ${fmt.format(savedN)} copied.` : 'Not copied anywhere yet. Saved pictures and videos are only inside Tof.';
     $('pickmedia').textContent = mediaFolderName ? 'Change folder' : 'Choose folder';
     const urls = [...mediaIdx.values()].filter(m => m.status === 'saved');
@@ -634,9 +660,16 @@
   const whoOf = n => personOf(n) ? nameOf(personOf(n)) : phoneNames[n] || n;
   const keyOfM = m => m.person ? 'p:' + m.person : keyOfNumber(m.contact);
   const whoOfM = m => m.person ? nameOf(m.person) : whoOf(m.contact);
+  // The same picture saved from two links is kept once and shown once (the newest message's).
   const itemsOf = msgs => {
-    const out = [];
-    [...msgs].sort((a, b) => b.when - a.when).forEach(m => urlsOf(m).forEach(u => { const e = mediaIdx.get(u); if (!e || e.status !== 'notmedia') out.push({ u, m, e: e || {} }); }));
+    const out = [], seen = new Set();
+    [...msgs].sort((a, b) => b.when - a.when).forEach(m => urlsOf(m).forEach(u => {
+      const e = shown(mediaIdx.get(u));
+      if (e && e.status === 'notmedia') return;
+      const key = e ? e.url : u;
+      if (seen.has(key)) return;
+      seen.add(key); out.push({ u, m, e: e || {} });
+    }));
     return out;
   };
   function tileHtml(i, n, cap) {
@@ -782,7 +815,7 @@
   let mediaFolderName = '';
   const copiedTokens = new Set();
   const fileOf = e => (e.local || '').replace(/\?.*$/, '').split('/').pop();
-  const tokenOf = e => fileOf(e).split('.')[0].slice(0, 10) + ((e.versions || []).length ? '-v' + (e.versions.length + 1) : '');
+  const tokenOf = e => fileOf(e).split('.')[0].slice(0, 10) + ((e.versions || []).length ? '-v' + (e.versions.length + 1) : '') + (e.turns ? '-r' + e.turns : '');
   const pad = n => String(n).padStart(2, '0');
   function exportName(i) {
     const d = i.m.when, ext = fileOf(i.e).split('.').pop();
@@ -793,7 +826,7 @@
   function copyToFolder() {
     if (!native || !native.copyMedia || !mediaFolderName || isExample) return;
     const items = itemsOf([...messages, ...allPickMsgs()]).filter(i => isSavedE(i.e) && !copiedTokens.has(tokenOf(i.e)))
-      .map(i => ({ file: fileOf(i.e), name: exportName(i), token: tokenOf(i.e) }));
+      .map(i => ({ file: fileOf(i.e), name: exportName(i), token: tokenOf(i.e), replace: i.e.turns ? fileOf(i.e).split('.')[0].slice(0, 10) : '' }));
     Object.entries(pages).forEach(([u, e]) => [e, ...(e.versions || [])].forEach(v => {
       if (!v.file || copiedTokens.has(v.file.replace(/\.\w+$/, ''))) return;
       const p = whoHasLink(u), d = new Date(v.savedAt || v.at), clean = s => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
@@ -1109,8 +1142,8 @@
   // Rotation: the saved file itself is turned, so copies and the media folder get it the right way up.
   const rotating = new Map(); // file -> url
   function rotateSaved(u, deg) {
-    const e = mediaIdx.get(u); if (!e || !isSavedE(e) || !native || !native.rotateMedia) return;
-    rotating.set(fileOf(e), u); native.rotateMedia(fileOf(e), deg);
+    const e = shown(mediaIdx.get(u)); if (!e || !isSavedE(e) || !native || !native.rotateMedia) return;
+    rotating.set(fileOf(e), e.url); native.rotateMedia(fileOf(e), deg);
   }
   function pendingRotation(u) {
     for (const p of people.values()) { const x = (p.picks || []).find(x => x.u === u && x.rot && !x.rotDone); if (x) return { p, x }; }
@@ -1119,12 +1152,14 @@
   window.__tofRotated = (file, ok) => {
     const u = rotating.get(file); rotating.delete(file);
     const e = u && mediaIdx.get(u); if (!e) return;
-    const r = pendingRotation(u); if (r) { r.x.rotDone = true; touch(r.p.id); flushSave(); }
+    const r = [...mediaIdx.values()].filter(x => x.url === u || x.dupOf === u).map(x => pendingRotation(x.url)).find(Boolean);
+    if (r) { r.x.rotDone = true; touch(r.p.id); flushSave(); }
     if (!ok) { setStatus("Couldn't rotate that picture.", true); return; }
     e.local = e.local.replace(/\?.*$/, '') + '?v=' + Date.now();
+    e.turns = (e.turns || 0) + 1;
     putAll('media', [e]);
-    copiedTokens.delete(tokenOf(e));
-    if ($('mediadlg').open && viewList[viewAt] && viewList[viewAt].u === u) openMedia(viewList, viewAt);
+    copySoon();
+    if ($('mediadlg').open && viewList[viewAt] && (shown(mediaIdx.get(viewList[viewAt].u)) || {}).url === u) { viewList[viewAt].e = e; openMedia(viewList, viewAt); }
     clearTimeout(rr); rr = setTimeout(refreshMedia, 100);
   };
 
@@ -1517,6 +1552,7 @@
     ready();
     readNotify(); syncTimers(); renderTimers();
     saveMediaFor([...messages, ...allPickMsgs()]);
+    hashOld();
     snapLinks();
     copyToFolder();
     lookupContacts(false);
