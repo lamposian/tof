@@ -80,6 +80,21 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .record .offer { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--you-soft); font-size: 0.85rem; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .btn.quiet { border-color: var(--line); color: var(--muted); }
 .btn:disabled { opacity: .5; cursor: default; }
+.dlg { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; box-sizing: border-box; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--fg); padding: 18px; }
+.dlg::backdrop { background: rgba(0, 0, 0, .45); }
+.dlg h2 { margin-bottom: 12px; }
+.dlg .imp { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
+.dlg .imp > .btn { justify-self: start; }
+.dlg .imphead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dlg .imphead b { font-family: var(--mono); font-weight: 500; }
+.dlg .impline { margin: 0; font-size: 0.88rem; color: var(--muted); }
+.dlg .impline b { color: var(--fg); }
+.dlg .impline.warn { color: var(--them); }
+.dlg .badge { text-transform: none; letter-spacing: 0; color: var(--you); background: var(--you-soft); }
+.dlg .badge.new { background: var(--you); color: var(--panel); }
+.dlg .add { display: flex; gap: 6px; flex-wrap: wrap; }
+.dlg .add input, .dlg .add select { font: inherit; font-size: 0.95rem; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; flex: 1; min-width: 140px; }
+.dlg .dlgfoot { display: flex; justify-content: flex-end; padding-top: 12px; border-top: 1px solid var(--line); }
 .cardhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .only { margin: 4px 0 10px; gap: 6px; }
 .only .pick { border: 1px solid var(--line); background: var(--panel); cursor: pointer; font: inherit; font-size: 0.8rem; padding: 3px 10px; }
@@ -224,6 +239,12 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   </section>
   </div>
 </div>
+
+<dialog class="dlg" id="importdlg" aria-labelledby="importtitle">
+  <h2 id="importtitle">Imported from TextNow</h2>
+  <div id="importbody"></div>
+  <div class="dlgfoot"><button type="button" class="btn" id="importdone">Done</button></div>
+</dialog>
 
 <script src="app.js"></script>
 

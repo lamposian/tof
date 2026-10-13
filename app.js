@@ -153,24 +153,65 @@
       } catch (e) { failed.push(f.name); }
     }
     const fresh = [];
-    let ask = '';
     if (added.length) {
       if (isExample) { messages = []; people.clear(); numbers.clear(); isExample = false; sel = null; }
       const seen = new Set(messages.map(m => m.k));
       added.forEach(m => { if (!seen.has(m.k)) { seen.add(m.k); messages.push(m); fresh.push(m); } });
       await putAll('messages', fresh.map(toStored));
-      const n = added[added.length - 1].contact, id = personOf(n);
       flushSave();
-      if (id) { sel = 'p:' + id; only = ''; } else { sel = 'n:' + n; ask = ` ${n} is a new number: choose its contact below.`; }
     }
-    const parts = [];
-    if (added.length) parts.push(`Read ${fmt.format(added.length)} messages from ${files.length - failed.length} file${files.length - failed.length === 1 ? '' : 's'} (${fmt.format(fresh.length)} new).${ask}`);
-    if (failed.length) parts.push(`No TextNow messages found in ${failed.join(', ')}. Check it's an exported conversation file.`);
-    setStatus(parts.join(' '), failed.length > 0);
+    // One summary per number in the import, shown in the import dialog.
+    const byNum = new Map(), isFresh = new Set(fresh);
+    added.forEach(m => {
+      const e = byNum.get(m.contact) || { n: m.contact, read: 0, fresh: 0, first: m.when, last: m.when, media: 0 };
+      e.read++; if (isFresh.has(m)) e.fresh++; e.media += urlsOf(m).length;
+      if (m.when < e.first) e.first = m.when; if (m.when > e.last) e.last = m.when;
+      byNum.set(m.contact, e);
+    });
+    // A second import while the dialog is still open adds to it instead of replacing it.
+    if (imported && $('importdlg').open) {
+      byNum.forEach((e, n) => { const i = imported.items.findIndex(x => x.n === n); if (i >= 0) imported.items.splice(i, 1); });
+      imported = { items: [...imported.items, ...byNum.values()], failed: [...imported.failed, ...failed] };
+    } else imported = { items: [...byNum.values()], failed };
+    const lastN = added.length ? added[added.length - 1].contact : null;
+    if (lastN) { const id = personOf(lastN); sel = id ? 'p:' + id : 'n:' + lastN; only = ''; }
+    setStatus(added.length ? `Imported ${fmt.format(fresh.length)} new message${fresh.length === 1 ? '' : 's'}.` : 'Nothing imported.', failed.length > 0);
     showTab('convos');
     render();
+    showImport();
     saveMediaFor(fresh);
     if (fresh.length) lookupContacts(false);
+  }
+
+  // ---- Import dialog: says what just came in and, for a number Tof hasn't seen, asks for its contact ----
+  let imported = null;
+  function showImport() {
+    const dlg = $('importdlg');
+    if (!imported || !dlg) return;
+    const { items, failed } = imported;
+    const range = e => +e.first === +e.last || localDay(e.first) === localDay(e.last) ? dayFmt.format(e.first) : `${dayFmt.format(e.first)} to ${dayFmt.format(e.last)}`;
+    $('importbody').innerHTML = items.map(e => {
+      const id = personOf(e.n), hint = phoneNames[e.n] || '';
+      const match = hint && byName().find(p => nameOf(p).toLowerCase() === hint.toLowerCase());
+      const counts = e.fresh ? `${fmt.format(e.fresh)} new message${e.fresh === 1 ? '' : 's'}${e.fresh < e.read ? ` (${fmt.format(e.read - e.fresh)} already in Tof)` : ''}` : `Nothing new: all ${fmt.format(e.read)} messages were already in Tof`;
+      return `<section class="imp" data-n="${esc(e.n)}">
+        <div class="imphead"><b>${esc(e.n)}</b><span class="badge ${id ? '' : 'new'}">${id ? esc(nameOf(id)) : 'New number'}</span></div>
+        <p class="impline">${counts}. ${range(e)}${e.media ? ` · ${fmt.format(e.media)} picture${e.media === 1 ? '' : 's'} or video${e.media === 1 ? '' : 's'}` : ''}.</p>
+        ${id ? `<button type="button" class="btn" data-goto="p:${esc(id)}">Open ${esc(nameOf(id))}</button>` : `
+        <p class="impline">${hint ? `Your phone contacts have this number as <b>${esc(hint)}</b>. ` : ''}Which contact does it belong to?</p>
+        ${people.size ? `<div class="add"><select data-pick aria-label="Contact for ${esc(e.n)}"><option value="">Choose a contact…</option>${byName().map(p => `<option value="${esc(p)}"${p === match ? ' selected' : ''}>${esc(nameOf(p))}</option>`).join('')}</select><button type="button" class="btn solid" data-assign="pick">Add</button></div>` : ''}
+        <div class="add"><input data-newname placeholder="New contact name" aria-label="New contact name for ${esc(e.n)}" value="${esc(match ? '' : hint)}"><button type="button" class="btn${people.size ? '' : ' solid'}" data-assign="new">Create contact</button></div>`}
+      </section>`;
+    }).join('') + (failed.length ? `<p class="impline warn">No TextNow messages found in ${esc(failed.join(', '))}. Check it's an exported conversation file.</p>` : '');
+    const waiting = items.filter(e => !personOf(e.n)).length;
+    $('importdone').textContent = waiting ? 'Decide later' : 'Done';
+    $('importtitle').textContent = items.length ? `Imported from TextNow` : 'Nothing imported';
+    if (!dlg.open) { if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', ''); }
+  }
+  function closeImport() { const dlg = $('importdlg'); imported = null; if (dlg.open) { if (dlg.close) dlg.close(); else dlg.removeAttribute('open'); } }
+  function assignNumber(n, to) {
+    setNumber(n, { person: to }); touch(to); flushSave();
+    setStatus(`Added ${n} to ${nameOf(to)}.`);
   }
 
   // ---- Media: pictures and videos are downloaded into the app so they outlive TextNow's links ----
@@ -226,6 +267,7 @@
     Object.assign(phoneNames, names || {});
     if (state === 'denied') setStatus("Tof can't read your contacts. To see suggestions from them, allow Contacts for Tof in Settings > Apps > Tof > Permissions.", true);
     renderContacts(); renderReader();
+    if (imported) showImport();
   };
 
   // ---- Rendering ----
@@ -496,8 +538,7 @@
       let to = t.id === 'a-add' ? $('a-pick').value : '';
       if (t.id === 'a-add' && !to) { $('a-pick').focus(); return; }
       if (t.id === 'a-create') { const name = $('a-new').value.trim(); if (!name) { $('a-new').focus(); return; } to = createPerson(name); }
-      setNumber(n, { person: to }); touch(to); flushSave();
-      setStatus(`Added ${n} to ${nameOf(to)}.`);
+      assignNumber(n, to);
       select('p:' + to); renderStats();
       return;
     }
@@ -614,6 +655,22 @@
     const hl = h => h === 0 ? '12a' : h < 12 ? h + 'a' : h === 12 ? '12p' : (h - 12) + 'p';
     chart(el, bins, (el.clientWidth || 420) < 420 ? 6 : 3, b => hl(b.h), b => `${hl(b.h)} to ${hl((b.h + 1) % 24)}`);
   }
+
+  $('importbody').addEventListener('click', e => {
+    const t = e.target, box = t.closest('.imp');
+    if (t.dataset.goto) { closeImport(); select(t.dataset.goto); return; }
+    if (!box || !t.dataset.assign) return;
+    const n = box.dataset.n;
+    let to = '';
+    if (t.dataset.assign === 'pick') { const s = box.querySelector('[data-pick]'); to = s.value; if (!to) { s.focus(); return; } }
+    else { const i = box.querySelector('[data-newname]'), name = i.value.trim(); if (!name) { i.focus(); return; } to = createPerson(name); }
+    assignNumber(n, to);
+    sel = 'p:' + to; only = '';
+    render(); showImport();
+  });
+  $('importbody').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.dataset.newname != null) { e.preventDefault(); e.target.nextElementSibling.click(); } });
+  $('importdone').addEventListener('click', closeImport);
+  $('importdlg').addEventListener('cancel', () => { imported = null; });
 
   // ---- Tabs ----
   function showTab(name) {
