@@ -49,6 +49,12 @@ h2 { font-family: var(--display); font-weight: 500; font-size: 1.1rem; margin: 0
 .status.warn { color: var(--them); }
 .badge { display: inline-block; font-size: 0.75rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--them); background: var(--them-soft); border-radius: 999px; padding: 2px 10px; }
 
+.example { margin: 0; }
+.tabs { display: flex; gap: 4px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2; }
+.tabs button { flex: 1; font: inherit; font-weight: 600; color: var(--muted); background: transparent; border: 0; border-radius: 9px; padding: 9px 12px; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--you); color: var(--panel); }
+.tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.view { display: flex; flex-direction: column; gap: 16px; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 12px; }
 .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
 .stat .k { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
@@ -106,23 +112,14 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
     <p class="status" id="status"></p>
   </section>
 
-  <section class="stats" id="stats" aria-label="Summary"></section>
+  <p class="example" id="example" hidden><span class="badge">Example data</span> <span class="privacy">Add your exports above to replace it.</span></p>
 
-  <section class="grid">
-    <div class="card">
-      <h2>Messages per day</h2>
-      <p class="sub" id="daysub">Sent and received, stacked.</p>
-      <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
-      <div class="chart" id="daily"></div>
-    </div>
-    <div class="card">
-      <h2>When you text</h2>
-      <p class="sub" id="hoursub">Messages by hour of day, in your local time.</p>
-      <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
-      <div class="chart" id="hours"></div>
-    </div>
-  </section>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tab-convos" aria-controls="view-convos" aria-selected="true">Conversations</button>
+    <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false">Stats</button>
+  </nav>
 
+  <div class="view" id="view-convos" role="tabpanel" aria-labelledby="tab-convos">
   <section class="grid">
     <div class="card">
       <h2>Contacts</h2>
@@ -140,6 +137,26 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
       <div class="reader" id="reader"></div>
     </div>
   </section>
+  </div>
+
+  <div class="view" id="view-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
+  <section class="stats" id="stats" aria-label="Summary"></section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Messages per day</h2>
+      <p class="sub" id="daysub">Sent and received, stacked.</p>
+      <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
+      <div class="chart" id="daily"></div>
+    </div>
+    <div class="card">
+      <h2>When you text</h2>
+      <p class="sub" id="hoursub">Messages by hour of day, in your local time.</p>
+      <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
+      <div class="chart" id="hours"></div>
+    </div>
+  </section>
+  </div>
 </div>
 
 <script>
@@ -244,7 +261,8 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
     const first = total ? new Date(Math.min(...times)) : null, last = total ? new Date(Math.max(...times)) : null;
     const spanDays = total ? Math.max(1, Math.round((last - first) / 864e5) + 1) : 0;
 
-    $('stats').innerHTML = (isExample ? '<div style="grid-column:1/-1"><span class="badge">Example data</span> <span class="privacy">Add your exports above to replace it.</span></div>' : '') + [
+    $('example').hidden = !isExample;
+    $('stats').innerHTML = [
       ['Messages', fmt.format(total), total ? `over ${fmt.format(spanDays)} day${spanDays === 1 ? '' : 's'}` : 'none yet'],
       ['Sent by you', fmt.format(sent), total ? `${Math.round(sent / total * 100)}% of all` : '—'],
       ['Received', fmt.format(total - sent), total ? `${Math.round((total - sent) / total * 100)}% of all` : '—'],
@@ -344,6 +362,20 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   const pick = tr => { if (tr && tr.dataset.c != null) { selected = tr.dataset.c; renderReader(); } };
   $('contacts').addEventListener('click', e => pick(e.target.closest('tr')));
   $('contacts').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(e.target.closest('tr')); } });
+  // Tabs: Conversations and Stats are separate screens.
+  function showTab(name) {
+    ['convos', 'stats'].forEach(t => {
+      const on = t === name;
+      $('tab-' + t).setAttribute('aria-selected', on);
+      $('view-' + t).hidden = !on;
+    });
+    if (name === 'stats') { drawDaily(); drawHours(); }
+    try { localStorage.setItem('tof-tab', name); } catch (e) {}
+  }
+  $('tab-convos').addEventListener('click', () => showTab('convos'));
+  $('tab-stats').addEventListener('click', () => showTab('stats'));
+  try { if (localStorage.getItem('tof-tab') === 'stats') setTimeout(() => showTab('stats')); } catch (e) {}
+
   let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { drawDaily(); drawHours(); }, 120); });
 
   window.__tofAdd = addFiles;
