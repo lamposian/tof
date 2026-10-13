@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open in Tof</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="icon-192.png">
+<style>
+:root { --bg: #f3f5f6; --panel: #fff; --line: #dde3e6; --fg: #17222a; --muted: #5d6b74; --you: #0f7c86; }
+@media (prefers-color-scheme: dark) { :root { --bg: #11181c; --panel: #1a2328; --line: #2c393f; --fg: #e8eef0; --muted: #9aa8af; --you: #4fb7c0; } }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 480px; margin: 0 auto; padding: 32px 16px; display: grid; gap: 14px; }
+h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.02em; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 6px; }
+.t { font-weight: 600; margin: 0; }
+.link { font-family: ui-monospace, monospace; font-size: 0.85rem; overflow-wrap: anywhere; color: var(--muted); margin: 0; }
+.go { display: block; text-align: center; font-weight: 600; font-size: 1.1rem; padding: 14px; border-radius: 10px; background: var(--you); color: #fff; text-decoration: none; }
+.row { display: flex; gap: 8px; }
+.row a, .row button { flex: 1; text-align: center; font: inherit; font-weight: 600; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); text-decoration: none; cursor: pointer; }
+.sub { margin: 0; color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Link for Tof</h1>
+  <div class="card"><p class="t" id="t"></p><p class="link" id="u">No link here. Make one with Send to Tof on your PC.</p></div>
+  <a class="go" id="go" href="#" hidden>Open in Tof</a>
+  <div class="row" id="more" hidden><a id="open" href="#" rel="noopener noreferrer">Open link</a><button type="button" id="copy">Copy link</button></div>
+  <p class="sub" id="note"></p>
+</main>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const p = new URLSearchParams(location.hash.slice(1)), u = p.get('u') || '', t = p.get('t') || '';
+  if (!/^https?:\/\//i.test(u)) return;
+  $('u').textContent = u; $('t').textContent = t; $('t').hidden = !t;
+  $('open').href = u; $('more').hidden = false;
+  $('copy').addEventListener('click', () => navigator.clipboard.writeText(u).then(() => { $('copy').textContent = 'Copied'; }));
+  if (/Android/i.test(navigator.userAgent)) {
+    $('go').href = 'intent://add?u=' + encodeURIComponent(u) + (t ? '&t=' + encodeURIComponent(t) : '') + '#Intent;scheme=tof;package=io.github.lamposian.tof;end';
+    $('go').hidden = false;
+    $('note').textContent = 'Tof will ask which contact this link is for.';
+  } else {
+    $('note').textContent = 'Open this page on your Android phone to add the link in Tof.';
+  }
+})();
+</script>
+</body>
+</html>

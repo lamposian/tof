@@ -193,6 +193,15 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .jumpnote .linkbtn { color: #9fdde3; font-weight: 600; text-decoration: none; white-space: nowrap; }
 .bottomnav button { font-size: 0.7rem !important; min-width: 0; }
 .timers { margin: 0 0 12px; display: grid; gap: 8px; }
+.linkdlg { display: grid; gap: 10px; }
+.linkdlg:not([open]) { display: none; }
+.linkdlg h2 { margin: 0; }
+.linkurls { margin: 0; padding: 8px 10px 8px 26px; background: var(--bg); border-radius: 8px; font-family: var(--mono); font-size: 0.8rem; overflow-wrap: anywhere; }
+.linkdlg .search { margin: 0; }
+.linkpick { display: grid; gap: 6px; max-height: 40vh; overflow-y: auto; }
+.pickrow { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; font: inherit; color: var(--fg); padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; }
+.pickrow small { color: var(--muted); font-size: 0.8rem; }
+.pickrow:hover, .pickrow:focus-visible { border-color: var(--you); }
 .timers h2 { margin: 0; }
 .timers .offer { margin: 0; }
 .trow { display: flex; align-items: flex-start; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -390,6 +399,10 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
       <p class="sub">Tof copies every picture and video it saves into the folder you choose, named by date and contact, and keeps adding new ones. The copies stay if Tof is uninstalled. To save just one, open it and tap Save a copy.</p>
     </section>
     <section class="card setting">
+      <h2>Send links from your PC</h2>
+      <p class="sub">On your PC, open <b>lamposian.github.io/tof/send.html</b> and drag its Send to Tof button to your bookmarks bar. Click the bookmark on any page, scan the QR code with this phone's camera, tap Open in Tof, and pick the contact. Links you share to Tof from any app on the phone work the same way.</p>
+    </section>
+    <section class="card setting">
       <h2>Data on this phone</h2>
       <p id="datasummary"></p>
       <div><button class="btn danger" id="clear" type="button">Clear all</button></div>
@@ -414,6 +427,16 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   <div class="mediastage"><button type="button" class="mstep" id="mediaprev" aria-label="Previous">‹</button><div id="mediaview"></div><button type="button" class="mstep" id="medianext" aria-label="Next">›</button></div>
   <p class="impline" id="mediacap"></p>
   <div class="dlgfoot"><button type="button" class="btn" id="mediasave" hidden>Save a copy</button><button type="button" class="btn solid" id="mediashow">Show in conversation</button></div>
+</dialog>
+
+<dialog class="dlg linkdlg" id="linkdlg" aria-labelledby="linkhead">
+  <h2 id="linkhead">Add this link to a contact</h2>
+  <p class="impline" id="linktitle" hidden></p>
+  <ul class="linkurls" id="linkurls"></ul>
+  <input type="search" id="linksearch" class="search" placeholder="Find a contact" aria-label="Find a contact">
+  <div class="linkpick" id="linkpick"></div>
+  <div class="add"><input id="linknew" placeholder="Or name a new contact" aria-label="New contact name"><button type="button" class="btn" id="linkcreate">Create</button></div>
+  <div class="dlgfoot"><button type="button" class="btn" id="linkcancel">Cancel</button></div>
 </dialog>
 
 <dialog class="dlg timerdlg" id="timerdlg" aria-labelledby="timertitle">

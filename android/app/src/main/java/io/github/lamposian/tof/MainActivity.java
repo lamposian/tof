@@ -67,6 +67,8 @@ public class MainActivity extends Activity {
     private String pendingSaveAs;
     // A contact to open once the page is ready, from a tapped timer notification.
     private String pendingOpen;
+    // A link to add to a contact: shared from another app, or opened from a "Send to Tof" QR code.
+    private String pendingLink, pendingLinkTitle;
     private final ExecutorService downloads = Executors.newFixedThreadPool(3);
     // Log file writes happen one at a time, in order.
     private final ExecutorService logIo = Executors.newSingleThreadExecutor();
@@ -836,18 +838,42 @@ public class MainActivity extends Activity {
         String action = intent.getAction();
         if (Intent.ACTION_SEND.equals(action)) {
             Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            String text = intent.getStringExtra(Intent.EXTRA_TEXT);
             if (uri != null) pendingShares.add(uri);
-            else pendingText = intent.getStringExtra(Intent.EXTRA_TEXT);
+            else if (isLink(text)) { pendingLink = text.trim(); pendingLinkTitle = intent.getStringExtra(Intent.EXTRA_SUBJECT); }
+            else pendingText = text;
         } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
             ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
             if (uris != null) pendingShares.addAll(uris);
+        } else if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null && "tof".equals(intent.getData().getScheme())) {
+            // tof://add?u=<link>&t=<title>, from the Send to Tof page.
+            Uri d = intent.getData();
+            String u = d.getQueryParameter("u");
+            if (u != null && (u.startsWith("https://") || u.startsWith("http://"))) { pendingLink = u; pendingLinkTitle = d.getQueryParameter("t"); }
+            intent.setData(null);
         }
         // Handle each share once, even if the activity is recreated.
         intent.setAction(Intent.ACTION_MAIN);
     }
 
+    /** Text that is just a link (maybe with a title line), not a conversation export. */
+    private static boolean isLink(String text) {
+        if (text == null) return false;
+        String t = text.trim();
+        return t.length() < 4000 && t.matches("(?s).*https?://\\S+.*") && !t.contains(" UTC - ");
+    }
+
+    private void deliverLink() {
+        if (!pageReady || pendingLink == null) return;
+        String js = "window.__tofLink && window.__tofLink(" + JSONObject.quote(pendingLink) + "," + JSONObject.quote(pendingLinkTitle == null ? "" : pendingLinkTitle) + ")";
+        pendingLink = null;
+        pendingLinkTitle = null;
+        web.evaluateJavascript(js, null);
+    }
+
     private void deliverShares() {
         deliverOpen();
+        deliverLink();
         if (!pageReady || (pendingShares.isEmpty() && pendingText == null)) return;
         JSONArray items = new JSONArray();
         try {

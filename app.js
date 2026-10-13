@@ -178,13 +178,17 @@
   function setStatus(text, warn) { const s = $('status'); s.textContent = text; s.classList.toggle('warn', !!warn); }
 
   async function addFiles(files) {
-    const added = [], failed = [];
+    const added = [], failed = [], shared = [];
     for (const f of files) {
       try {
-        const msgs = parseExport(await f.text(), f.name);
-        if (msgs.length) added.push(...msgs); else failed.push(f.name);
+        const text = await f.text(), msgs = parseExport(text, f.name);
+        if (msgs.length) added.push(...msgs);
+        else if (text.length < 4000 && linksIn(text).length) shared.push(text);
+        else failed.push(f.name);
       } catch (e) { failed.push(f.name); }
     }
+    // A shared link, not a conversation export: ask which contact it belongs to.
+    if (shared.length && !added.length && !failed.length) return window.__tofLink(shared.join('\n'), '');
     const fresh = [];
     if (added.length) {
       if (isExample) { messages = []; people.clear(); numbers.clear(); isExample = false; sel = null; }
@@ -942,6 +946,55 @@
     if (!entries().ppl.concat(entries().loose).some(e => e.key === key)) return;
     select(key); showSub('convos');
     requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
+  };
+
+  // ---- Add link: a link shared from another app or sent from a PC lands here, and Bob picks its contact ----
+  let pendingLinks = null;
+  function linksIn(text) { return [...new Set((String(text).match(/https?:\/\/[^\s<>"']+/g) || []).map(u => u.replace(/[).,;!?]+$/, '')))]; }
+  function showLinkDlg(urls, title) {
+    if (!urls.length) return;
+    pendingLinks = { urls, title: (title || '').trim() };
+    $('linkurls').innerHTML = urls.map(u => `<li>${esc(u)}</li>`).join('');
+    $('linktitle').textContent = pendingLinks.title;
+    $('linktitle').hidden = !pendingLinks.title;
+    $('linkhead').textContent = urls.length === 1 ? 'Add this link to a contact' : `Add these ${urls.length} links to a contact`;
+    $('linksearch').value = ''; $('linknew').value = '';
+    renderLinkPick();
+    const d = $('linkdlg'); if (!d.open) { if (d.showModal) d.showModal(); else d.setAttribute('open', ''); }
+  }
+  function renderLinkPick() {
+    const q = $('linksearch').value.trim().toLowerCase();
+    const list = isExample ? [] : [...people.values()].filter(p => !q || [nameOf(p.id), ...numbersOf(p.id)].join(' ').toLowerCase().includes(q))
+      .sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 30);
+    $('linkpick').innerHTML = list.length ? list.map(p => `<button type="button" class="pickrow" data-lp="${esc(p.id)}"><b>${esc(nameOf(p.id))}</b><small>${esc(numbersOf(p.id).map(n => num(n).label || n).join(', ') || 'No numbers')}</small></button>`).join('')
+      : `<p class="impline">${isExample ? 'No contacts yet. Name a new one below.' : 'No contacts match.'}</p>`;
+  }
+  function addLinksTo(id) {
+    const p = people.get(id); if (!p || !pendingLinks) return;
+    const before = linksOf(id), fresh = pendingLinks.urls.filter(u => !before.includes(u));
+    p.fields = { ...p.fields, links: [...before, ...fresh] };
+    touch(id); snaps.set(id, snapOf(id)); flushSave();
+    fresh.forEach(u => logEvent('link', `Added a link to ${nameOf(id)}: ${u}`));
+    setStatus(fresh.length ? `Added ${fresh.length === 1 ? 'the link' : fresh.length + ' links'} to ${nameOf(id)}.` : `${nameOf(id)} already has ${pendingLinks.urls.length === 1 ? 'that link' : 'those links'}.`);
+    closeLinkDlg();
+    select('p:' + id); showSub('info');
+  }
+  const closeLinkDlg = () => { pendingLinks = null; const d = $('linkdlg'); if (d.close) d.close(); else d.removeAttribute('open'); };
+  $('linksearch').addEventListener('input', renderLinkPick);
+  $('linkpick').addEventListener('click', e => { const b = e.target.closest('[data-lp]'); if (b) addLinksTo(b.dataset.lp); });
+  $('linkcreate').addEventListener('click', () => {
+    const name = $('linknew').value.trim(); if (!name) { $('linknew').focus(); return; }
+    if (isExample) { messages = []; people.clear(); numbers.clear(); isExample = false; sel = null; }
+    addLinksTo(createPerson(name));
+  });
+  $('linknew').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('linkcreate').click(); } });
+  $('linkcancel').addEventListener('click', closeLinkDlg);
+  $('linkdlg').addEventListener('cancel', () => { pendingLinks = null; });
+  window.__tofLink = async (text, title) => {
+    await loaded;
+    const urls = linksIn(text);
+    const rest = String(text).replace(/https?:\/\/[^\s<>"']+/g, '').trim();
+    showLinkDlg(urls, title || rest.split('\n')[0].slice(0, 200));
   };
 
   function select(key) { flushSave(); sel = key; only = ''; renderContacts(); showTab('contact'); renderReader(); window.scrollTo(0, 0); }

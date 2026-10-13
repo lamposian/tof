@@ -34,6 +34,13 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/*" />
             </intent-filter>
+            <!-- Links sent from a PC with the Send to Tof page: tof://add?u=... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tof" android:host="add" />
+            </intent-filter>
         </activity>
 
         <receiver android:name=".Timers" android:exported="false">
