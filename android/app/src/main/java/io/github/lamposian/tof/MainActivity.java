@@ -289,6 +289,12 @@ public class MainActivity extends Activity {
         public void rewriteLog(String text) { logIo.execute(() -> writeLog(text, false)); }
 
         @JavascriptInterface
+        public void checkMedia(String url, String etag, String lastMod) {
+            if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
+            downloads.execute(() -> check(url, etag, lastMod));
+        }
+
+        @JavascriptInterface
         public void clearMedia() {
             File[] files = mediaDir.listFiles();
             if (files != null) for (File f : files) f.delete();
@@ -473,6 +479,7 @@ public class MainActivity extends Activity {
             int code = conn.getResponseCode();
             // Expired TextNow media links answer 403 Access Denied (S3) or 404/410.
             if (code >= 400) { report(url, code == 403 || code == 404 || code == 410 ? "gone" : "failed", "", "", 0); return; }
+            String etag = header(conn, "ETag"), lastMod = header(conn, "Last-Modified");
             String type = conn.getContentType() == null ? "" : conn.getContentType().split(";")[0].trim().toLowerCase(Locale.US);
             try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(tmp)) {
                 byte[] head = new byte[32];
@@ -491,7 +498,7 @@ public class MainActivity extends Activity {
                 out.close();
                 File dest = new File(mediaDir, base + "." + extFor(mime));
                 if (!tmp.renameTo(dest)) throw new Exception("rename failed");
-                report(url, "saved", dest.getName(), mime, total);
+                report(url, "saved", dest.getName(), mime, total, etag, lastMod);
             }
         } catch (Exception e) {
             tmp.delete();
@@ -501,11 +508,70 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void report(String url, String status, String file, String mime, long size) {
+    private void report(String url, String status, String file, String mime, long size) { report(url, status, file, mime, size, "", ""); }
+    private void report(String url, String status, String file, String mime, long size, String etag, String lastMod) {
         String local = file.isEmpty() ? "" : "https://" + HOST + "/media/" + file;
         String js = "window.__tofMediaDone && window.__tofMediaDone(" + JSONObject.quote(url) + "," + JSONObject.quote(status) + ","
-                + JSONObject.quote(local) + "," + JSONObject.quote(mime) + "," + size + ")";
+                + JSONObject.quote(local) + "," + JSONObject.quote(mime) + "," + size + "," + JSONObject.quote(etag) + "," + JSONObject.quote(lastMod) + ")";
         web.post(() -> web.evaluateJavascript(js, null));
+    }
+
+    private static String header(HttpURLConnection c, String name) { String v = c.getHeaderField(name); return v == null ? "" : v; }
+
+    /**
+     * Asks the server whether a saved file has changed, fetching at most one byte: a conditional ranged GET
+     * (TextNow's signed links don't allow HEAD). Unchanged: "same". Link expired: "offline". Changed: the old
+     * file is kept as old-<name> and the new version is downloaded, which then reports through __tofMediaDone.
+     */
+    private void check(String url, String etag, String lastMod) {
+        String base = sha1(url);
+        File[] existing = mediaDir.listFiles((dir, name) -> name.startsWith(base + "."));
+        File saved = existing != null && existing.length > 0 ? existing[0] : null;
+        HttpURLConnection conn = null;
+        String result = "error", newTag = "", newMod = "", oldLocal = "";
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setInstanceFollowRedirects(true);
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(30000);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) Tof");
+            conn.setRequestProperty("Range", "bytes=0-0");
+            if (etag != null && !etag.isEmpty()) conn.setRequestProperty("If-None-Match", etag);
+            if (lastMod != null && !lastMod.isEmpty()) conn.setRequestProperty("If-Modified-Since", lastMod);
+            int code = conn.getResponseCode();
+            newTag = header(conn, "ETag");
+            newMod = header(conn, "Last-Modified");
+            if (code == 304) {
+                result = "same";
+                if (newTag.isEmpty()) newTag = etag == null ? "" : etag;
+            } else if (code == 403 || code == 404 || code == 410) {
+                result = "offline";
+            } else if (code == 200 || code == 206) {
+                long remoteSize = -1;
+                String range = header(conn, "Content-Range");
+                int slash = range.lastIndexOf('/');
+                if (slash >= 0) { try { remoteSize = Long.parseLong(range.substring(slash + 1).trim()); } catch (Exception ignored) { } }
+                else if (code == 200) remoteSize = conn.getContentLengthLong();
+                boolean same = etag != null && !etag.isEmpty() ? etag.equals(newTag)
+                        : saved != null && remoteSize >= 0 && remoteSize == saved.length();
+                if (same || saved == null) {
+                    result = "same";
+                } else {
+                    File old = new File(mediaDir, "old-" + System.currentTimeMillis() + "-" + saved.getName());
+                    if (saved.renameTo(old)) {
+                        oldLocal = "https://" + HOST + "/media/" + old.getName();
+                        result = "changed";
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        String js = "window.__tofMediaCheck && window.__tofMediaCheck(" + JSONObject.quote(url) + "," + JSONObject.quote(result) + ","
+                + JSONObject.quote(newTag) + "," + JSONObject.quote(newMod) + "," + JSONObject.quote(oldLocal) + ")";
+        web.post(() -> web.evaluateJavascript(js, null));
+        if (result.equals("changed")) download(url);
     }
 
     private static String sniff(byte[] b, int n) {

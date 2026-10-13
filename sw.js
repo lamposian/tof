@@ -1,5 +1,5 @@
 // Tof service worker: caches the app for offline use and receives files shared from Android's Share menu.
-const APP = 'tof-app-v10';
+const APP = 'tof-app-v11';
 const INBOX = 'tof-inbox';
 const FILES = ['./', './index.html', './app.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 

@@ -264,17 +264,48 @@
   }
   let rr, mediaLogT;
   const mediaTally = { saved: 0, gone: 0 };
+  // Freshness: saved files are compared with TextNow's copy, without downloading, at most once a week each.
+  const WEEK = 7 * 864e5;
+  const checking = new Set();
+  function checkFresh(urls) {
+    if (!native || !native.checkMedia || isExample) return;
+    urls.forEach(u => {
+      const e = mediaIdx.get(u);
+      if (!e || e.status !== 'saved' || e.online === false || checking.has(u) || Date.now() - (e.checkedAt || 0) < WEEK) return;
+      checking.add(u);
+      try { native.checkMedia(u, e.etag || '', e.lastMod || ''); } catch (err) { checking.delete(u); }
+    });
+  }
+  window.__tofMediaCheck = (url, result, etag, lastMod, oldLocal) => {
+    checking.delete(url);
+    const e = mediaIdx.get(url); if (!e) return;
+    if (result === 'error') return;
+    e.checkedAt = Date.now();
+    if (result === 'offline') e.online = false;
+    else { e.online = true; if (etag) e.etag = etag; if (lastMod) e.lastMod = lastMod; }
+    if (result === 'changed') {
+      e.versions = [...(e.versions || []), { local: oldLocal, mime: e.mime, at: Date.now() }];
+      pendingMedia.add(url);
+      const m = messages.find(x => urlsOf(x).includes(url)), who = m ? (personOf(m.contact) ? nameOf(personOf(m.contact)) : m.contact) : 'a conversation';
+      logEvent('media', `TextNow had a newer version of a picture or video from ${who}. Downloaded it and kept the old one`);
+    }
+    putAll('media', [e]);
+    clearTimeout(rr); rr = setTimeout(renderReader, 300);
+  };
   function logMedia() {
     if (mediaTally.saved) logEvent('media', `Saved ${fmt.format(mediaTally.saved)} picture${mediaTally.saved === 1 ? '' : 's'} or video${mediaTally.saved === 1 ? '' : 's'} on the phone`);
     if (mediaTally.gone) logEvent('media', `${fmt.format(mediaTally.gone)} picture${mediaTally.gone === 1 ? '' : 's'} or video${mediaTally.gone === 1 ? '' : 's'} had already expired at TextNow`);
     mediaTally.saved = mediaTally.gone = 0;
   }
-  window.__tofMediaDone = (url, status, local, mime, size) => {
+  window.__tofMediaDone = (url, status, local, mime, size, etag, lastMod) => {
     pendingMedia.delete(url);
     const prev = mediaIdx.get(url) || {};
     // A copy already on the phone always wins over a later failed or expired check.
-    if (prev.status === 'saved' && status !== 'saved') { clearTimeout(rr); rr = setTimeout(renderReader, 300); return; }
-    const e = { url, status, local: local || '', mime: mime || '', size: size || 0, tries: (prev.tries || 0) + (status === 'failed' ? 1 : 0), savedAt: Date.now() };
+    if (prev.status === 'saved' && status !== 'saved') { if (status === 'gone') { prev.online = false; putAll('media', [prev]); } clearTimeout(rr); rr = setTimeout(renderReader, 300); return; }
+    const fresh = status === 'saved' && !!etag;
+    const e = { ...prev, url, status, local: local || '', mime: mime || '', size: size || 0, tries: (prev.tries || 0) + (status === 'failed' ? 1 : 0),
+      savedAt: prev.status === 'saved' && prev.local === local ? prev.savedAt : Date.now(),
+      etag: etag || prev.etag || '', lastMod: lastMod || prev.lastMod || '', checkedAt: fresh ? Date.now() : prev.checkedAt || 0, online: status === 'gone' ? false : fresh ? true : prev.online };
     mediaIdx.set(url, e);
     putAll('media', [e]);
     if (status === 'saved' || status === 'gone') { mediaTally[status]++; clearTimeout(mediaLogT); mediaLogT = setTimeout(logMedia, 3000); }
@@ -575,7 +606,8 @@
     $('only').hidden = !multi || sub === 'info';
     $('only').innerHTML = multi ? [['', 'All numbers'], ...ns.map(n => [n, num(n).label || n])].map(([v, t]) => `<button type="button" class="chip pick${v === only ? ' on' : ''}" data-only="${esc(v)}" aria-pressed="${v === only}">${esc(t)}</button>`).join('') : '';
     const tag = multi && !only;
-    $('reader').innerHTML = msgs.length ? msgs.map(m => `<div class="msg ${m.you ? 'you' : 'them'}">${bodyHtml(m)}<time>${fullFmt.format(m.when)}${tag ? ` · ${esc(num(m.contact).label || m.contact)}` : ''}</time></div>`).join('')
+    renderMedia(msgs, multi);
+    $('reader').innerHTML = msgs.length ? msgs.map(m => `<div class="msg ${m.you ? 'you' : 'them'}" data-k="${esc(m.k)}">${bodyHtml(m)}<time>${fullFmt.format(m.when)}${tag ? ` · ${esc(num(m.contact).label || m.contact)}` : ''}</time></div>`).join('')
       : sel ? '<p class="empty">No messages yet. Share a TextNow export for one of these numbers to add them.</p>' : '';
     // A URL that isn't a loadable picture falls back to a plain link.
     $('reader').querySelectorAll('img.pic').forEach(img => img.addEventListener('error', () => {
@@ -583,18 +615,63 @@
     }, { once: true }));
     document.querySelectorAll('#contacts tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.k === sel));
   }
+  // ---- Media subtab: every picture and video for the open contact ----
+  let mediaItems = [];
+  function renderMedia(msgs, multi) {
+    if ($('view-contact').hidden || sub !== 'media') return;
+    mediaItems = [];
+    [...msgs].reverse().forEach(m => urlsOf(m).forEach(u => { const e = mediaIdx.get(u); if (!e || e.status !== 'notmedia') mediaItems.push({ u, m, e: e || {} }); }));
+    const saved = mediaItems.filter(i => i.e.status === 'saved').length, gone = mediaItems.filter(i => i.e.status === 'gone').length;
+    $('mediasub').textContent = !mediaItems.length ? 'No pictures or videos.'
+      : `${fmt.format(mediaItems.length)} picture${mediaItems.length === 1 ? '' : 's'} or video${mediaItems.length === 1 ? '' : 's'}, newest first. ${native ? `${fmt.format(saved)} saved on this phone${gone ? `, ${fmt.format(gone)} expired before saving` : ''}.` : 'Saving them needs the Android app.'}`;
+    $('mediagrid').innerHTML = mediaItems.map((i, n) => {
+      const { e, m } = i, isSaved = e.status === 'saved' && e.local;
+      const video = isSaved ? /^video\//.test(e.mime) : /\.(mp4|m4v|webm|3gp|mov)(\?|#|$)/i.test(i.u);
+      const badge = e.status === 'gone' ? ''
+        : isSaved && e.online === false ? '<span class="mbadge">Only on this phone</span>'
+        : isSaved ? '' : pendingMedia.has(i.u) ? '<span class="mbadge">Saving…</span>' : '<span class="mbadge">Not saved yet</span>';
+      const thumb = e.status === 'gone' ? '<span class="mgone">Expired at TextNow before saving</span>'
+        : video ? `<video src="${esc(isSaved ? e.local : i.u)}#t=0.1" preload="metadata" muted playsinline></video><span class="mplay" aria-hidden="true">▶</span>`
+        : `<img src="${esc(isSaved ? e.local : i.u)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+      return `<button type="button" class="mtile" data-mi="${n}" aria-label="${video ? 'Video' : 'Picture'} from ${esc(dayFmt.format(m.when))}">${thumb}${badge}<span class="mcap">${esc(dayFmt.format(m.when))}${multi ? ` · ${esc(num(m.contact).label || m.contact)}` : ''}</span></button>`;
+    }).join('');
+    checkFresh(mediaItems.map(i => i.u));
+    saveMediaFor(mediaItems.map(i => i.m));
+  }
+  function openMedia(n) {
+    const i = mediaItems[n]; if (!i) return;
+    const { e, m } = i, isSaved = e.status === 'saved' && e.local;
+    const video = isSaved ? /^video\//.test(e.mime) : /\.(mp4|m4v|webm|3gp|mov)(\?|#|$)/i.test(i.u);
+    const src = isSaved ? e.local : i.u;
+    $('mediaview').innerHTML = e.status === 'gone' ? '<p class="empty">This one expired at TextNow before Tof could save it.</p>'
+      : video ? `<video src="${esc(src)}" controls autoplay playsinline></video>` : `<img src="${esc(src)}" alt="Picture message" referrerpolicy="no-referrer">`;
+    const state = e.status === 'gone' ? 'Expired before saving' : !isSaved ? 'Not saved on this phone yet' : e.online === false ? 'Saved on this phone. No longer on TextNow' : e.checkedAt ? `Saved on this phone. Matched TextNow's copy ${dayFmt.format(new Date(e.checkedAt))}` : 'Saved on this phone';
+    $('mediacap').innerHTML = `${esc(fullFmt.format(m.when))} · ${m.you ? 'You' : esc(num(m.contact).label || m.contact)}<br>${esc(state)}${(e.versions || []).length ? `<br>Earlier versions: ${e.versions.map((v, k) => `<a href="${esc(v.local)}" target="_blank" rel="noopener">${esc(dayFmt.format(new Date(v.at)))}</a>`).join(', ')}` : ''}`;
+    $('mediadlg').dataset.k = m.k;
+    const d = $('mediadlg'); if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+  }
+  function closeMedia() { const d = $('mediadlg'); $('mediaview').innerHTML = ''; if (d.close) d.close(); else d.removeAttribute('open'); }
+  $('mediagrid').addEventListener('click', e => { const b = e.target.closest('.mtile'); if (b) openMedia(+b.dataset.mi); });
+  $('mediaclose').addEventListener('click', closeMedia);
+  $('mediadlg').addEventListener('close', () => { $('mediaview').innerHTML = ''; });
+  $('mediashow').addEventListener('click', () => {
+    const k = $('mediadlg').dataset.k; closeMedia(); showSub('convos');
+    const el = [...document.querySelectorAll('#reader .msg')].find(x => x.dataset.k === k);
+    if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); }
+  });
+
   function select(key) { flushSave(); sel = key; only = ''; renderContacts(); showTab('contact'); renderReader(); window.scrollTo(0, 0); }
   // Contact subtabs: Info, Conversations, Stats.
   let sub = 'info';
-  try { const v = localStorage.getItem('tof-sub'); if (['info', 'convos', 'cstats'].includes(v)) sub = v; } catch (e) {}
+  try { const v = localStorage.getItem('tof-sub'); if (['info', 'convos', 'cstats', 'media'].includes(v)) sub = v; } catch (e) {}
   function showSub(name) {
     sub = name;
-    ['info', 'convos', 'cstats'].forEach(t => { $('sub-' + t).setAttribute('aria-selected', t === name); $('pane-' + t).hidden = t !== name; });
+    ['info', 'convos', 'cstats', 'media'].forEach(t => { $('sub-' + t).setAttribute('aria-selected', t === name); $('pane-' + t).hidden = t !== name; });
     try { localStorage.setItem('tof-sub', name); } catch (e) {}
     renderReader();
   }
-  ['info', 'convos', 'cstats'].forEach(t => $('sub-' + t).addEventListener('click', () => showSub(t)));
-  ['info', 'convos', 'cstats'].forEach(t => { $('sub-' + t).setAttribute('aria-selected', t === sub); $('pane-' + t).hidden = t !== sub; });
+  ['info', 'convos', 'cstats', 'media'].forEach(t => $('sub-' + t).addEventListener('click', () => showSub(t)));
+  ['info', 'convos', 'cstats', 'media'].forEach(t => { $('sub-' + t).setAttribute('aria-selected', t === sub); $('pane-' + t).hidden = t !== sub; });
   $('back').addEventListener('click', () => showTab('contacts'));
   $('gocontacts').addEventListener('click', () => showTab('contacts'));
   $('top').addEventListener('click', e => { const b = e.target.closest('button'); if (b && b.dataset.k) select(b.dataset.k); });
