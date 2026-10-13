@@ -9,6 +9,8 @@ import android.Manifest;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.DocumentsContract;
+import android.content.SharedPreferences;
 import android.provider.ContactsContract;
 import android.provider.OpenableColumns;
 import android.webkit.JavascriptInterface;
@@ -46,6 +48,8 @@ public class MainActivity extends Activity {
     private static final String START_URL = "https://" + HOST + "/assets/index.html";
     private static final int PICK_FILES = 1;
     private static final int ASK_CONTACTS = 2;
+    private static final int PICK_LOG_FOLDER = 3;
+    private static final String LOG_NAME = "tof-log.txt";
     private static final int MAX_BYTES = 20 * 1024 * 1024;
     private static final long MAX_MEDIA_BYTES = 300L * 1024 * 1024;
 
@@ -58,6 +62,8 @@ public class MainActivity extends Activity {
     private File mediaDir;
     private String pendingLookup;
     private final ExecutorService downloads = Executors.newFixedThreadPool(3);
+    // Log file writes happen one at a time, in order.
+    private final ExecutorService logIo = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -152,6 +158,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PICK_LOG_FOLDER) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri tree = data.getData();
+                try {
+                    getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    prefs().edit().putString("logTree", tree.toString()).apply();
+                } catch (Exception ignored) { }
+                logIo.execute(this::sendLogFile);
+            }
+            return;
+        }
         if (requestCode != PICK_FILES || pendingChooser == null) return;
         Uri[] result = null;
         if (resultCode == RESULT_OK && data != null) {
@@ -170,6 +187,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         downloads.shutdownNow();
+        logIo.shutdown();
         super.onDestroy();
     }
 
@@ -242,6 +260,33 @@ public class MainActivity extends Activity {
         public String version() {
             try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception e) { return ""; }
         }
+
+        /** Asks for a folder (outside the app's own storage) to keep the activity log in, so it outlives a reinstall. */
+        @JavascriptInterface
+        public void pickLogFolder() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                try { startActivityForResult(i, PICK_LOG_FOLDER); } catch (ActivityNotFoundException ignored) { }
+            });
+        }
+
+        /** The chosen log folder's name, or "" when none is chosen or access was lost. */
+        @JavascriptInterface
+        public String logFolder() {
+            Uri tree = logTree();
+            return tree == null ? "" : folderName(tree);
+        }
+
+        /** Sends the log file's text to the page (window.__tofLogFile). */
+        @JavascriptInterface
+        public void readLog() { logIo.execute(MainActivity.this::sendLogFile); }
+
+        @JavascriptInterface
+        public void appendLog(String lines) { logIo.execute(() -> writeLog(lines, true)); }
+
+        @JavascriptInterface
+        public void rewriteLog(String text) { logIo.execute(() -> writeLog(text, false)); }
 
         @JavascriptInterface
         public void clearMedia() {
@@ -335,6 +380,72 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
         }
         return out;
+    }
+
+    private SharedPreferences prefs() { return getSharedPreferences("tof", MODE_PRIVATE); }
+
+    private Uri logTree() {
+        String t = prefs().getString("logTree", null);
+        if (t == null) return null;
+        Uri tree = Uri.parse(t);
+        for (android.content.UriPermission p : getContentResolver().getPersistedUriPermissions()) {
+            if (p.getUri().equals(tree) && p.isWritePermission()) return tree;
+        }
+        return null;
+    }
+
+    private String folderName(Uri tree) {
+        String id = DocumentsContract.getTreeDocumentId(tree);
+        int colon = id.indexOf(':');
+        String path = colon >= 0 ? id.substring(colon + 1) : id;
+        return path.isEmpty() ? "Internal storage" : path;
+    }
+
+    /** Finds tof-log.txt in the chosen folder, creating it when asked. */
+    private Uri logFile(boolean create) {
+        Uri tree = logTree();
+        if (tree == null) return null;
+        String parent = DocumentsContract.getTreeDocumentId(tree);
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent);
+        String[] cols = { DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME };
+        try (Cursor c = getContentResolver().query(children, cols, null, null, null)) {
+            while (c != null && c.moveToNext()) {
+                if (LOG_NAME.equals(c.getString(1))) return DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0));
+            }
+        } catch (Exception e) {
+            return null;
+        }
+        if (!create) return null;
+        try {
+            return DocumentsContract.createDocument(getContentResolver(), DocumentsContract.buildDocumentUriUsingTree(tree, parent), "text/plain", LOG_NAME);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void writeLog(String text, boolean append) {
+        Uri file = logFile(true);
+        if (file == null || text == null) return;
+        try (OutputStream out = getContentResolver().openOutputStream(file, append ? "wa" : "wt")) {
+            if (out != null) out.write(text.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) { }
+    }
+
+    private void sendLogFile() {
+        Uri tree = logTree();
+        String text = "";
+        Uri file = logFile(false);
+        if (file != null) {
+            try (InputStream in = getContentResolver().openInputStream(file)) {
+                ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                byte[] b = new byte[8192];
+                int n;
+                while (in != null && (n = in.read(b)) > 0) buf.write(b, 0, n);
+                text = buf.toString("UTF-8");
+            } catch (Exception ignored) { }
+        }
+        String js = "window.__tofLogFile && window.__tofLogFile(" + JSONObject.quote(text) + "," + JSONObject.quote(tree == null ? "" : folderName(tree)) + ")";
+        web.post(() -> web.evaluateJavascript(js, null));
     }
 
     private void sendContacts(JSONObject names, String state) { sendContacts(names, state, new JSONObject()); }

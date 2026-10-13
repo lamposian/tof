@@ -63,15 +63,16 @@
 
   // ---- Storage (IndexedDB, kept in the app's own data on the phone) ----
   // people: contact records. records: one entry per phone number, pointing at its contact.
+  // log is kept apart: Clear all leaves the activity log in place.
   const STORES = ['messages', 'records', 'media', 'meta', 'people'];
   let db = null;
   function openDb() {
     return new Promise(res => {
       try {
-        const r = indexedDB.open('tof', 2);
+        const r = indexedDB.open('tof', 3);
         r.onupgradeneeded = () => {
           const d = r.result, make = (n, k) => { if (!d.objectStoreNames.contains(n)) d.createObjectStore(n, { keyPath: k }); };
-          make('messages', 'k'); make('records', 'contact'); make('media', 'url'); make('meta', 'id'); make('people', 'id');
+          make('messages', 'k'); make('records', 'contact'); make('media', 'url'); make('meta', 'id'); make('people', 'id'); make('log', 'id');
         };
         r.onsuccess = () => res(r.result);
         r.onerror = () => res(null);
@@ -142,6 +143,38 @@
     return d;
   }
 
+  // ---- Activity log: every action in Tof, kept in IndexedDB and, when a folder is chosen, in tof-log.txt there ----
+  let logs = [];               // newest first: {id, at, kind, text}
+  let logFolderName = '';
+  const LOG_KINDS = { app: 'App', import: 'Import', contact: 'Contact', number: 'Number', link: 'Link', field: 'Field', phone: 'Phone', media: 'Media', data: 'Data' };
+  const putLog = items => new Promise(res => {
+    if (!db || !items.length) return res();
+    const t = db.transaction('log', 'readwrite'); const st = t.objectStore('log');
+    items.forEach(i => st.put(i));
+    t.oncomplete = () => res(); t.onerror = () => res();
+  });
+  function logEvent(kind, text) {
+    const e = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7), at: Date.now(), kind, text };
+    logs.unshift(e);
+    putLog([e]);
+    if (native && native.appendLog && logFolderName) { try { native.appendLog(JSON.stringify(e) + '\n'); } catch (err) {} }
+    clearTimeout(logRender); logRender = setTimeout(renderLog, 200);
+  }
+  let logRender;
+  // Entries from tof-log.txt (for example after a reinstall) are merged in; the file is then rewritten with everything.
+  window.__tofLogFile = (text, folder) => {
+    logFolderName = folder || '';
+    const have = new Set(logs.map(e => e.id)), fresh = [];
+    let fileIds = 0;
+    (text || '').split('\n').forEach(line => {
+      try { const e = JSON.parse(line); if (e && e.id && e.at) { fileIds++; if (!have.has(e.id)) { have.add(e.id); fresh.push(e); } } } catch (err) {}
+    });
+    if (fresh.length) { logs = [...logs, ...fresh].sort((a, b) => b.at - a.at); putLog(fresh); }
+    if (logFolderName && native && native.rewriteLog && fileIds !== logs.length) native.rewriteLog([...logs].reverse().map(e => JSON.stringify(e)).join('\n') + '\n');
+    if (fresh.length) setStatus(`Brought back ${fmt.format(fresh.length)} log entr${fresh.length === 1 ? 'y' : 'ies'} from ${logFolderName}.`);
+    renderLog(); renderSettings();
+  };
+
   function setStatus(text, warn) { const s = $('status'); s.textContent = text; s.classList.toggle('warn', !!warn); }
 
   async function addFiles(files) {
@@ -173,6 +206,8 @@
       byNum.forEach((e, n) => { const i = imported.items.findIndex(x => x.n === n); if (i >= 0) imported.items.splice(i, 1); });
       imported = { items: [...imported.items, ...byNum.values()], failed: [...imported.failed, ...failed] };
     } else imported = { items: [...byNum.values()], failed };
+    byNum.forEach(e => { const id = personOf(e.n); logEvent('import', `Imported ${e.n}${id ? ` (${nameOf(id)})` : ' (new number)'}: ${fmt.format(e.fresh)} new of ${fmt.format(e.read)} messages`); });
+    failed.forEach(f => logEvent('import', `Could not read ${f}: no TextNow messages found`));
     const lastN = added.length ? added[added.length - 1].contact : null;
     if (lastN) { const id = personOf(lastN); sel = id ? 'p:' + id : 'n:' + lastN; only = ''; }
     setStatus(added.length ? `Imported ${fmt.format(fresh.length)} new message${fresh.length === 1 ? '' : 's'}.` : 'Nothing imported.', failed.length > 0);
@@ -212,6 +247,7 @@
   function assignNumber(n, to) {
     setNumber(n, { person: to }); touch(to); flushSave();
     setStatus(`Added ${n} to ${nameOf(to)}.`);
+    logEvent('number', `Added ${n} to ${nameOf(to)}`);
     lookupContacts(false);
   }
 
@@ -226,7 +262,13 @@
       try { native.saveMedia(u); } catch (err) { pendingMedia.delete(u); }
     }));
   }
-  let rr;
+  let rr, mediaLogT;
+  const mediaTally = { saved: 0, gone: 0 };
+  function logMedia() {
+    if (mediaTally.saved) logEvent('media', `Saved ${fmt.format(mediaTally.saved)} picture${mediaTally.saved === 1 ? '' : 's'} or video${mediaTally.saved === 1 ? '' : 's'} on the phone`);
+    if (mediaTally.gone) logEvent('media', `${fmt.format(mediaTally.gone)} picture${mediaTally.gone === 1 ? '' : 's'} or video${mediaTally.gone === 1 ? '' : 's'} had already expired at TextNow`);
+    mediaTally.saved = mediaTally.gone = 0;
+  }
   window.__tofMediaDone = (url, status, local, mime, size) => {
     pendingMedia.delete(url);
     const prev = mediaIdx.get(url) || {};
@@ -235,6 +277,7 @@
     const e = { url, status, local: local || '', mime: mime || '', size: size || 0, tries: (prev.tries || 0) + (status === 'failed' ? 1 : 0), savedAt: Date.now() };
     mediaIdx.set(url, e);
     putAll('media', [e]);
+    if (status === 'saved' || status === 'gone') { mediaTally[status]++; clearTimeout(mediaLogT); mediaLogT = setTimeout(logMedia, 3000); }
     clearTimeout(rr); rr = setTimeout(renderReader, 300);
   };
 
@@ -264,6 +307,8 @@
     native.lookupContacts(JSON.stringify(all), ask || !asked);
   }
   window.__tofContacts = (names, state, details) => {
+    let last = ''; try { last = localStorage.getItem('tof-phone-state') || ''; localStorage.setItem('tof-phone-state', state); } catch (e) {}
+    if (state !== last && state !== 'not-asked') logEvent('phone', `Phone contacts access: ${state === 'granted' ? 'allowed' : 'not allowed'}`);
     contactsState = state;
     Object.assign(phoneNames, names || {});
     copyFromPhone(details || {});
@@ -282,14 +327,14 @@
       if (!d) return;
       const copy = { name: d.name || '', nickname: d.nickname || '', phones: d.phones || [], emails: d.emails || [], addresses: d.addresses || [], company: d.company || '', title: d.title || '', websites: d.websites || [], birthday: d.birthday || '', note: d.note || '' };
       const prev = p.phone ? JSON.stringify({ ...p.phone, copied: 0 }) : '';
-      if (prev !== JSON.stringify({ ...copy, copied: 0 })) { p.phone = { ...copy, copied: Date.now() }; changed.add(p.id); }
+      if (prev !== JSON.stringify({ ...copy, copied: 0 })) { p.phone = { ...copy, copied: Date.now() }; changed.add(p.id); logEvent('phone', `${prev ? 'Updated' : 'Copied'} ${nameOf(p.id)}'s details from phone contacts`); }
       if (!(p.fields.name || '').trim() && copy.name) { p.fields = { ...p.fields, name: copy.name }; changed.add(p.id); }
       // The phone entry's other numbers join this contact, unless they already belong to another one.
       copy.phones.forEach(ph => {
         const n = normNumber(ph.value);
         if (!n) return;
         const owner = personOf(n), label = (ph.label || '').toLowerCase();
-        if (!owner) { setNumber(n, { person: p.id, label: num(n).label || label }); changed.add(p.id); }
+        if (!owner) { setNumber(n, { person: p.id, label: num(n).label || label }); changed.add(p.id); logEvent('number', `Added ${n} to ${nameOf(p.id)} from phone contacts`); }
         else if (owner === p.id && !num(n).label && label) { setNumber(n, { label }); changed.add(p.id); }
       });
     });
@@ -349,7 +394,26 @@
     renderSettings();
   }
 
+  let logQuery = '', logShown = 300;
+  function renderLog() {
+    if ($('view-log').hidden) return;
+    const words = logQuery.toLowerCase().split(/\s+/).filter(Boolean);
+    const list = logs.filter(e => words.every(w => (e.text + ' ' + (LOG_KINDS[e.kind] || '')).toLowerCase().includes(w)));
+    $('logsub').textContent = `${fmt.format(logs.length)} entr${logs.length === 1 ? 'y' : 'ies'}${logs.length ? ` since ${dayFmt.format(new Date(logs[logs.length - 1].at))}` : ''}, newest first.`;
+    let day = '', html = '';
+    list.slice(0, logShown).forEach(e => {
+      const d = new Date(e.at), k = localDay(d);
+      if (k !== day) { day = k; html += `<h3 class="logday">${esc(new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }).format(d))}</h3>`; }
+      html += `<div class="logrow"><time>${esc(new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(d))}</time><span class="chip kind-${esc(e.kind)}">${esc(LOG_KINDS[e.kind] || e.kind)}</span><span class="lt">${esc(e.text)}</span></div>`;
+    });
+    $('loglist').innerHTML = html || `<p class="empty">${logs.length ? 'Nothing matches.' : 'Nothing logged yet.'}</p>`;
+    $('logmore').hidden = list.length <= logShown;
+  }
+
   function renderSettings() {
+    $('logcard').hidden = !native || !native.pickLogFolder;
+    $('logfolder').innerHTML = logFolderName ? `Kept in <b>${esc(logFolderName)}</b> as tof-log.txt.` : 'Only inside Tof right now, so uninstalling would delete it.';
+    $('pickfolder').textContent = logFolderName ? 'Change folder' : 'Choose folder';
     const urls = [...mediaIdx.values()].filter(m => m.status === 'saved');
     const mb = urls.reduce((n, m) => n + (m.size || 0), 0) / 1048576;
     const nums = new Set([...messages.map(m => m.contact), ...numbers.keys()]).size;
@@ -538,9 +602,20 @@
   // ---- Editing contacts ----
   const dirty = new Set();
   let saveTimer;
+  // Edits are logged once they're saved, naming the fields that changed.
+  const snaps = new Map();
+  const snapOf = id => { const p = people.get(id); return p ? { ...p.fields, labels: numbersOf(id).filter(n => num(n).label).map(n => n + '=' + num(n).label).join(',') } : null; };
+  const fieldName = k => ({ name: 'Name', tags: 'Tags', notes: 'Notes', links: 'Links', labels: 'Number labels' })[k] || (fieldDefs.find(d => d.id === k) || {}).label || k;
+  function logEdits(id) {
+    const now = snapOf(id), was = snaps.get(id) || {};
+    if (!now) return;
+    const keys = [...new Set([...Object.keys(now), ...Object.keys(was)])].filter(k => JSON.stringify(now[k] || '') !== JSON.stringify(was[k] || ''));
+    snaps.set(id, now);
+    if (keys.length && !isExample) logEvent('contact', `Edited ${nameOf(id)}: ${keys.map(fieldName).join(', ')}`);
+  }
   function flushSave() {
     clearTimeout(saveTimer); saveTimer = null;
-    if (dirty.size) { putAll('people', [...dirty].map(id => people.get(id)).filter(Boolean)); dirty.clear(); }
+    if (dirty.size) { putAll('people', [...dirty].map(id => people.get(id)).filter(Boolean)); dirty.forEach(logEdits); dirty.clear(); }
   }
   function touch(id) { const p = people.get(id); if (p) { p.updated = Date.now(); dirty.add(id); } }
   function updateField(f, value) {
@@ -558,10 +633,14 @@
   function createPerson(name) {
     const p = { id: newId(), fields: { name: name || '' }, created: Date.now(), updated: Date.now() };
     people.set(p.id, p); putAll('people', [p]);
+    snaps.set(p.id, snapOf(p.id));
+    logEvent('contact', `Created contact ${name || '(no name yet)'}`);
     return p.id;
   }
   // Takes a number off its contact. One that has no messages is forgotten; one with messages goes back to New numbers.
   function detach(n) {
+    const from = personOf(n);
+    if (from) logEvent('number', `Removed ${n} from ${nameOf(from)}`);
     if (messages.some(m => m.contact === n)) setNumber(n, { person: null });
     else { numbers.delete(n); delOne('records', n); }
   }
@@ -577,7 +656,7 @@
     const d = e.target.dataset, id = openId();
     if (d.f) updateField(d.f, e.target.value);
     if (d.link != null && id) { const l = [...linksOf(id)]; l[+d.link] = e.target.value; updateField('links', l); }
-    if (d.label != null && !isExample) { setNumber(d.label, { label: e.target.value.trim() }); clearTimeout(saveTimer); saveTimer = setTimeout(() => { flushSave(); renderContacts(); }, 400); }
+    if (d.label != null && !isExample) { setNumber(d.label, { label: e.target.value.trim() }); if (id) dirty.add(id); clearTimeout(saveTimer); saveTimer = setTimeout(() => { flushSave(); renderContacts(); }, 400); }
   });
   $('record').addEventListener('change', e => {
     // Tidy a link once editing is done: add https:// and drop emptied rows.
@@ -615,8 +694,8 @@
       return;
     }
     if (!id) return;
-    if (d.open != null) { openLink(linksOf(id)[+d.open]); return; }
-    if (d.openurl != null) { openLink(d.openurl); return; }
+    if (d.open != null) { logEvent('link', `Opened ${normLink(linksOf(id)[+d.open])} for ${nameOf(id)}`); openLink(linksOf(id)[+d.open]); return; }
+    if (d.openurl != null) { logEvent('link', `Opened ${normLink(d.openurl)} for ${nameOf(id)}`); openLink(d.openurl); return; }
     if (d.copy != null) { copyLink(normLink(linksOf(id)[+d.copy]), t); return; }
     if (d.unlink != null) { updateField('links', linksOf(id).filter((_, i) => i !== +d.unlink)); renderReader(); return; }
     if (d.usename != null) { updateField('name', d.usename); flushSave(); renderContacts(); renderReader(); return; }
@@ -632,6 +711,7 @@
       const prev = personOf(n);
       if (prev === id) { setStatus(`${n} is already on this contact.`); return; }
       setNumber(n, { person: id }); touch(id); if (prev) touch(prev); flushSave();
+      logEvent('number', prev ? `Moved ${n} from ${nameOf(prev)} to ${nameOf(id)}` : `Added ${n} to ${nameOf(id)}`);
       setStatus(prev ? `Moved ${n} from ${nameOf(prev)} to ${nameOf(id)}.` : `Added ${n}. Exports from this number will go to ${nameOf(id)}.`);
       renderContacts(); renderReader(); renderStats(); $('newnum').focus();
       lookupContacts(false);
@@ -639,6 +719,7 @@
     }
     if (t.id === 'savephone') {
       savedOffer = true;
+      logEvent('phone', `Opened the Contacts app to save ${nameOf(id)} on the phone`);
       native.saveContact(nameOf(id) === numbersOf(id)[0] ? '' : nameOf(id), JSON.stringify(numbersOf(id)));
       return;
     }
@@ -648,6 +729,7 @@
       numbersOf(id).forEach(detach);
       people.delete(id); dirty.delete(id); delOne('people', id);
       setStatus(`Deleted ${name}. Its messages are kept under New numbers.`);
+      logEvent('contact', `Deleted contact ${name}`);
       sel = null; render();
       return;
     }
@@ -661,6 +743,7 @@
       if (!label) { $('newfield').focus(); return; }
       if (fieldDefs.some(f => f.label.toLowerCase() === label.toLowerCase())) { setStatus(`There's already a field called ${label}.`, true); return; }
       fieldDefs.push({ id: 'c' + Date.now().toString(36), label });
+      logEvent('field', `Added field ${label} to all contacts`);
       putAll('meta', [{ id: 'fields', list: fieldDefs }]);
       renderReader();
       const last = fieldDefs[fieldDefs.length - 1]; if ($('f-' + last.id)) $('f-' + last.id).focus();
@@ -668,6 +751,7 @@
     }
     if (d.remove) {
       if (!armed(t, 'Remove?')) return;
+      logEvent('field', `Removed field ${fieldName(d.remove)}`);
       fieldDefs = fieldDefs.filter(f => f.id !== d.remove);
       putAll('meta', [{ id: 'fields', list: fieldDefs }]);
       renderReader();
@@ -747,7 +831,7 @@
 
   // ---- Tabs ----
   function showTab(name) {
-    ['contacts', 'contact', 'stats', 'settings'].forEach(t => {
+    ['contacts', 'contact', 'stats', 'log', 'settings'].forEach(t => {
       const on = t === name;
       $('tab-' + t).setAttribute('aria-selected', on);
       $('view-' + t).hidden = !on;
@@ -759,6 +843,7 @@
   $('tab-contacts').addEventListener('click', () => showTab('contacts'));
   $('tab-contact').addEventListener('click', () => { showTab('contact'); renderReader(); });
   $('tab-stats').addEventListener('click', () => showTab('stats'));
+  $('tab-log').addEventListener('click', () => { showTab('log'); renderLog(); });
   $('tab-settings').addEventListener('click', () => showTab('settings'));
 
   // ---- Wiring ----
@@ -769,6 +854,9 @@
   $('file').addEventListener('change', e => { if (e.target.files.length) addFiles([...e.target.files]); e.target.value = ''; });
   $('usecontacts').addEventListener('click', () => lookupContacts(true));
   $('phonecheck').addEventListener('click', () => lookupContacts(true));
+  $('pickfolder').addEventListener('click', () => native.pickLogFolder());
+  $('logsearch').addEventListener('input', e => { logQuery = e.target.value.trim(); logShown = 300; renderLog(); });
+  $('logmore').addEventListener('click', () => { logShown += 300; renderLog(); });
   $('search').addEventListener('input', e => { query = e.target.value.trim(); renderContacts(); });
 
   // Clearing deletes saved records and media, so it takes a second tap.
@@ -786,7 +874,8 @@
     await putAll('meta', [{ id: 'localtime', at: Date.now() }, { id: 'people', at: Date.now() }]);
     if (native) { try { native.clearMedia(); } catch (e) {} }
     messages = []; people.clear(); numbers.clear(); dirty.clear(); fieldDefs = []; mediaIdx.clear(); sel = null;
-    setStatus('Deleted all contacts, conversations and saved media.');
+    setStatus('Deleted all contacts, conversations and saved media. The log is kept.');
+    logEvent('data', 'Cleared all contacts, conversations and saved media');
     render();
   });
 
@@ -840,7 +929,8 @@
   (async function init() {
     db = await openDb();
     if (db && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-    const [stored, recs, media, meta, ppl] = await Promise.all([getAll('messages'), getAll('records'), getAll('media'), getAll('meta'), getAll('people')]);
+    const [stored, recs, media, meta, ppl, logged] = await Promise.all([getAll('messages'), getAll('records'), getAll('media'), getAll('meta'), getAll('people'), getAll('log')]);
+    logs = logged.sort((a, b) => b.at - a.at);
     messages = stored.map(fromStored);
     // Messages imported before the time fix were read as UTC; re-read their clock times as local.
     if (messages.length && !meta.some(m => m.id === 'localtime')) {
@@ -859,9 +949,15 @@
     recs.forEach(r => numbers.set(r.contact, { contact: r.contact, person: r.person || null, label: r.label || '', updated: r.updated }));
     media.forEach(m => mediaIdx.set(m.url, m));
     const f = meta.find(m => m.id === 'fields'); if (f) fieldDefs = f.list || [];
+    people.forEach(p => snaps.set(p.id, snapOf(p.id)));
     if (!messages.length && !people.size) { messages = exampleData(); isExample = true; exampleContacts(); }
+    let ver = ''; try { ver = native && native.version ? native.version() : ''; } catch (e) {}
+    if (!logs.length) logEvent('app', native ? 'Tof installed or its data was reset' : 'Started keeping a log');
+    logEvent('app', `Opened Tof${ver ? ' ' + ver : ''}`);
+    try { logFolderName = native && native.logFolder ? native.logFolder() : ''; } catch (e) {}
+    if (logFolderName) native.readLog();
     if (!db) setStatus('This browser is not keeping data, so contacts last until you close Tof.', true);
-    try { { const t = localStorage.getItem('tof-tab'); if (['contacts', 'contact', 'stats', 'settings'].includes(t)) showTab(t); } } catch (e) {}
+    try { { const t = localStorage.getItem('tof-tab'); if (['contacts', 'contact', 'stats', 'log', 'settings'].includes(t)) showTab(t); } } catch (e) {}
     render();
     ready();
     saveMediaFor(messages);

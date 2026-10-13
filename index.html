@@ -158,6 +158,13 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .setting { display: flex; flex-direction: column; gap: 8px; }
 .setting p { margin: 0; }
 .setrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.loglist { padding: 4px 14px 12px; }
+.logday { font-family: var(--display); font-weight: 500; font-size: 0.9rem; color: var(--muted); margin: 12px 0 4px; }
+.logrow { display: grid; grid-template-columns: 64px auto minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: 0.9rem; }
+.logrow time { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
+.logrow .chip { font-size: 0.7rem; }
+.logrow .lt { overflow-wrap: anywhere; }
+.bottomnav .ico { width: 48px !important; }
 .version { text-align: center; color: var(--muted); font-size: 0.8rem; margin: 0; }
 .linkbtn { font: inherit; color: var(--you); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
 .drop h2 { width: 100%; }
@@ -280,6 +287,14 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
     </section>
   </div>
 
+  <div class="view" id="view-log" role="tabpanel" aria-labelledby="tab-log" hidden>
+    <div class="viewhead"><h1>Log</h1></div>
+    <p class="sub" id="logsub"></p>
+    <input type="search" id="logsearch" class="search" placeholder="Search the log" aria-label="Search the log">
+    <div class="card loglist" id="loglist"></div>
+    <div><button type="button" class="btn" id="logmore" hidden>Show older</button></div>
+  </div>
+
   <div class="view" id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
     <div class="viewhead"><h1>Settings</h1></div>
     <section class="drop" id="drop" aria-label="Import from TextNow">
@@ -294,6 +309,11 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
       <div class="setrow"><span id="phonestate">Access: checking…</span><button type="button" class="btn" id="phonecheck">Check again</button></div>
       <p class="sub">Tof uses your phone's names only as suggestions when you choose a number's contact.</p>
     </section>
+    <section class="card setting" id="logcard">
+      <h2>Log file</h2>
+      <div class="setrow"><span id="logfolder"></span><button type="button" class="btn" id="pickfolder">Choose folder</button></div>
+      <p class="sub">Uninstalling Tof deletes its own storage. A copy of the log in a folder you choose, like Documents, stays on the phone. After reinstalling, choose the same folder to bring the log back.</p>
+    </section>
     <section class="card setting">
       <h2>Data on this phone</h2>
       <p id="datasummary"></p>
@@ -307,6 +327,7 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
     <button type="button" role="tab" id="tab-contacts" aria-controls="view-contacts" aria-selected="true"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1"/><circle cx="9" cy="8" r="3.5"/><path d="M22 19v-1a4 4 0 0 0-3-3.87"/><path d="M16 4.13a4 4 0 0 1 0 7.75"/></svg></span>Contacts</button>
     <button type="button" role="tab" id="tab-contact" aria-controls="view-contact" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 17a3.5 3.5 0 0 1 7 0"/><path d="M15 10h4M15 14h3"/></svg></span>Contact</button>
     <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M2 20h20"/></svg></span>Stats</button>
+    <button type="button" role="tab" id="tab-log" aria-controls="view-log" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>Log</button>
     <button type="button" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></span>Settings</button>
 </nav>
 
