@@ -165,7 +165,7 @@
   function mediaHtml(u) {
     const e = mediaIdx.get(u);
     if (e && e.status === 'notmedia') return `<a class="link" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`;
-    if (e && e.status === 'gone') return `<span class="link">Picture or video no longer available from TextNow</span>`;
+    if (e && e.status === 'gone') return `<span class="link gone">Picture or video expired at TextNow before Tof could save it</span>`;
     const saved = e && e.status === 'saved' && e.local;
     const src = saved ? e.local : u;
     const isVideo = saved ? /^video\//.test(e.mime) : /\.(mp4|m4v|webm|3gp|mov)(\?|#|$)/i.test(u);

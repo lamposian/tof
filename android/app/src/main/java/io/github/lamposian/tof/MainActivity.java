@@ -200,7 +200,8 @@ public class MainActivity extends Activity {
             conn.setReadTimeout(60000);
             conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) Tof");
             int code = conn.getResponseCode();
-            if (code >= 400) { report(url, code == 404 || code == 410 ? "gone" : "failed", "", "", 0); return; }
+            // Expired TextNow media links answer 403 Access Denied (S3) or 404/410.
+            if (code >= 400) { report(url, code == 403 || code == 404 || code == 410 ? "gone" : "failed", "", "", 0); return; }
             String type = conn.getContentType() == null ? "" : conn.getContentType().split(";")[0].trim().toLowerCase(Locale.US);
             try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(tmp)) {
                 byte[] head = new byte[32];
