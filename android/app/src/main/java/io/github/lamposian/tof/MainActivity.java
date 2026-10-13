@@ -8,6 +8,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -22,10 +23,19 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Hosts the Tof web app and feeds it TextNow exports shared from other apps. */
 public class MainActivity extends Activity {
@@ -33,6 +43,7 @@ public class MainActivity extends Activity {
     private static final String START_URL = "https://" + HOST + "/assets/index.html";
     private static final int PICK_FILES = 1;
     private static final int MAX_BYTES = 20 * 1024 * 1024;
+    private static final long MAX_MEDIA_BYTES = 300L * 1024 * 1024;
 
     private WebView web;
     private WebViewAssetLoader assets;
@@ -40,13 +51,18 @@ public class MainActivity extends Activity {
     private final List<Uri> pendingShares = new ArrayList<>();
     private String pendingText;
     private boolean pageReady;
+    private File mediaDir;
+    private final ExecutorService downloads = Executors.newFixedThreadPool(3);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        mediaDir = new File(getFilesDir(), "media");
+        mediaDir.mkdirs();
         assets = new WebViewAssetLoader.Builder()
                 .setDomain(HOST)
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .addPathHandler("/media/", new WebViewAssetLoader.InternalStoragePathHandler(this, mediaDir))
                 .build();
 
         web = new WebView(this);
@@ -57,6 +73,7 @@ public class MainActivity extends Activity {
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        web.addJavascriptInterface(new Bridge(), "TofAndroid");
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -143,6 +160,137 @@ public class MainActivity extends Activity {
         }
         pendingChooser.onReceiveValue(result);
         pendingChooser = null;
+    }
+
+    @Override
+    protected void onDestroy() {
+        downloads.shutdownNow();
+        super.onDestroy();
+    }
+
+    /** Lets the page keep copies of pictures and videos from messages, since TextNow's links expire. */
+    private class Bridge {
+        @JavascriptInterface
+        public void saveMedia(String url) {
+            if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
+            downloads.execute(() -> download(url));
+        }
+
+        @JavascriptInterface
+        public void clearMedia() {
+            File[] files = mediaDir.listFiles();
+            if (files != null) for (File f : files) f.delete();
+        }
+    }
+
+    private void download(String url) {
+        String base = sha1(url);
+        File[] existing = mediaDir.listFiles((dir, name) -> name.startsWith(base + "."));
+        if (existing != null && existing.length > 0) {
+            File f = existing[0];
+            report(url, "saved", f.getName(), mimeForExt(f.getName()), f.length());
+            return;
+        }
+        HttpURLConnection conn = null;
+        File tmp = new File(mediaDir, base + ".part");
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setInstanceFollowRedirects(true);
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(60000);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) Tof");
+            int code = conn.getResponseCode();
+            if (code >= 400) { report(url, code == 404 || code == 410 ? "gone" : "failed", "", "", 0); return; }
+            String type = conn.getContentType() == null ? "" : conn.getContentType().split(";")[0].trim().toLowerCase(Locale.US);
+            try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(tmp)) {
+                byte[] head = new byte[32];
+                int got = 0, n;
+                while (got < head.length && (n = in.read(head, got, head.length - got)) > 0) got += n;
+                String mime = type.startsWith("image/") || type.startsWith("video/") ? type : sniff(head, got);
+                if (mime == null) { out.close(); tmp.delete(); report(url, "notmedia", "", "", 0); return; }
+                out.write(head, 0, got);
+                long total = got;
+                byte[] buf = new byte[65536];
+                while ((n = in.read(buf)) > 0) {
+                    total += n;
+                    if (total > MAX_MEDIA_BYTES) throw new Exception("too large");
+                    out.write(buf, 0, n);
+                }
+                out.close();
+                File dest = new File(mediaDir, base + "." + extFor(mime));
+                if (!tmp.renameTo(dest)) throw new Exception("rename failed");
+                report(url, "saved", dest.getName(), mime, total);
+            }
+        } catch (Exception e) {
+            tmp.delete();
+            report(url, "failed", "", "", 0);
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private void report(String url, String status, String file, String mime, long size) {
+        String local = file.isEmpty() ? "" : "https://" + HOST + "/media/" + file;
+        String js = "window.__tofMediaDone && window.__tofMediaDone(" + JSONObject.quote(url) + "," + JSONObject.quote(status) + ","
+                + JSONObject.quote(local) + "," + JSONObject.quote(mime) + "," + size + ")";
+        web.post(() -> web.evaluateJavascript(js, null));
+    }
+
+    private static String sniff(byte[] b, int n) {
+        if (n >= 3 && (b[0] & 0xff) == 0xff && (b[1] & 0xff) == 0xd8) return "image/jpeg";
+        if (n >= 4 && (b[0] & 0xff) == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G') return "image/png";
+        if (n >= 4 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F' && b[3] == '8') return "image/gif";
+        if (n >= 12 && b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F' && b[8] == 'W' && b[9] == 'E' && b[10] == 'B' && b[11] == 'P') return "image/webp";
+        if (n >= 12 && b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') {
+            String brand = new String(b, 8, 4, StandardCharsets.US_ASCII);
+            if (brand.startsWith("hei") || brand.startsWith("mif1") || brand.startsWith("hev")) return "image/heic";
+            if (brand.startsWith("3g")) return "video/3gpp";
+            if (brand.startsWith("qt")) return "video/quicktime";
+            return "video/mp4";
+        }
+        if (n >= 4 && (b[0] & 0xff) == 0x1a && (b[1] & 0xff) == 0x45 && (b[2] & 0xff) == 0xdf && (b[3] & 0xff) == 0xa3) return "video/webm";
+        return null;
+    }
+
+    private static String extFor(String mime) {
+        switch (mime) {
+            case "image/jpeg": return "jpg";
+            case "image/png": return "png";
+            case "image/gif": return "gif";
+            case "image/webp": return "webp";
+            case "image/heic": case "image/heif": return "heic";
+            case "video/3gpp": return "3gp";
+            case "video/quicktime": return "mov";
+            case "video/webm": return "webm";
+            default: return mime.startsWith("video/") ? "mp4" : "img";
+        }
+    }
+
+    private static String mimeForExt(String name) {
+        String ext = name.substring(name.lastIndexOf('.') + 1);
+        switch (ext) {
+            case "jpg": return "image/jpeg";
+            case "png": return "image/png";
+            case "gif": return "image/gif";
+            case "webp": return "image/webp";
+            case "heic": return "image/heic";
+            case "3gp": return "video/3gpp";
+            case "mov": return "video/quicktime";
+            case "webm": return "video/webm";
+            case "mp4": return "video/mp4";
+            default: return "image/*";
+        }
+    }
+
+    private static String sha1(String s) {
+        try {
+            byte[] d = MessageDigest.getInstance("SHA-1").digest(s.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte x : d) sb.append(String.format(Locale.US, "%02x", x));
+            return sb.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(s.hashCode());
+        }
     }
 
     private void collectShares(Intent intent) {

@@ -1,7 +1,7 @@
 // Tof service worker: caches the app for offline use and receives files shared from Android's Share menu.
-const APP = 'tof-app-v2';
+const APP = 'tof-app-v3';
 const INBOX = 'tof-inbox';
-const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+const FILES = ['./', './index.html', './app.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(APP).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
