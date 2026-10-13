@@ -175,11 +175,8 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
                 if (HOST.equals(url.getHost())) return false;
-                // Links and pictures in messages open in the phone's browser.
-                try {
-                    startActivity(new Intent(Intent.ACTION_VIEW, url));
-                } catch (ActivityNotFoundException ignored) {
-                }
+                // Links and pictures in messages open privately, like every other link.
+                Browse.open(MainActivity.this, url);
                 return true;
             }
 
@@ -348,22 +345,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void openPrivate(String url) {
             if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
-            runOnUiThread(() -> {
-                Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                Bundle b = new Bundle();
-                b.putBinder("android.support.customtabs.extra.SESSION", null);
-                i.putExtras(b);
-                i.putExtra("androidx.browser.customtabs.extra.ENABLE_EPHEMERAL_BROWSING", true);
-                i.putExtra("com.google.android.apps.chrome.EXTRA_OPEN_NEW_INCOGNITO_TAB", true);
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                i.setPackage("com.android.chrome");
-                try {
-                    startActivity(i);
-                } catch (ActivityNotFoundException e) {
-                    i.setPackage(null);
-                    try { startActivity(i); } catch (ActivityNotFoundException ignored) { }
-                }
-            });
+            runOnUiThread(() -> Browse.open(MainActivity.this, Uri.parse(url)));
         }
 
         /** Opens the phone's Contacts app with a new contact filled in; the person reviews it and taps Save. */

@@ -35,7 +35,7 @@ public class PageActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
                 if ("file".equals(url.getScheme())) return false;
-                try { startActivity(new Intent(Intent.ACTION_VIEW, url)); } catch (ActivityNotFoundException ignored) { }
+                Browse.open(PageActivity.this, url);
                 return true;
             }
         });
