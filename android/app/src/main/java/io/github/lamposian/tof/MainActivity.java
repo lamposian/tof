@@ -93,14 +93,14 @@ public class MainActivity extends Activity {
           function add(u) {
             if (!u) return;
             try { u = new URL(String(u).trim(), location.href).href; } catch (e) { return; }
-            if (!/^https?:/.test(u) || /\.svg(\?|#|$)/i.test(u) || seen[u]) return;
+            if (!/^https?:/.test(u) || /\\.svg(\\?|#|$)/i.test(u) || seen[u]) return;
             seen[u] = 1; out.push(u);
           }
           function best(set) {
             if (!set) return '';
             var top = '', w = -1;
-            set.split(/,\s+/).forEach(function (part) {
-              var bits = part.trim().split(/\s+/), v = parseFloat(bits[1]) || 1;
+            set.split(/,\\s+/).forEach(function (part) {
+              var bits = part.trim().split(/\\s+/), v = parseFloat(bits[1]) || 1;
               if (bits[0] && v > w) { w = v; top = bits[0]; }
             });
             return top;
@@ -119,13 +119,13 @@ public class MainActivity extends Activity {
             add(best(s.getAttribute('srcset') || s.getAttribute('data-srcset')));
           });
           Array.prototype.forEach.call(document.querySelectorAll('a[href]'), function (a) {
-            if (/\.(jpe?g|png|webp|gif|heic|avif)(\?|#|$)/i.test(a.getAttribute('href'))) add(a.getAttribute('href'));
+            if (/\\.(jpe?g|png|webp|gif|heic|avif)(\\?|#|$)/i.test(a.getAttribute('href'))) add(a.getAttribute('href'));
           });
           Array.prototype.forEach.call(document.querySelectorAll('body *'), function (el) {
             if (out.length > 300) return;
             var r = el.getBoundingClientRect();
             if (r.width < 150 || r.height < 150) return;
-            var bg = getComputedStyle(el).backgroundImage, m = bg && bg.match(/url\(["']?([^"')]+)["']?\)/);
+            var bg = getComputedStyle(el).backgroundImage, m = bg && bg.match(/url\\(["']?([^"')]+)["']?\\)/);
             if (m) add(m[1]);
           });
           return JSON.stringify(out.slice(0, 200));
