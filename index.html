@@ -38,7 +38,7 @@ h2 { font-family: var(--display); font-weight: 500; font-size: 1.1rem; margin: 0
 
 .drop { border: 1.5px dashed var(--line); border-radius: 12px; background: var(--panel); padding: 18px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; transition: border-color .15s, background .15s; }
 .drop.over { border-color: var(--you); background: var(--you-soft); }
-.drop p { margin: 0; flex: 1 1 260px; min-width: 0; }
+.drop p { margin: 0; flex: 1 1 100%; min-width: 0; }
 .drop strong { font-weight: 600; }
 .btn { font: inherit; font-weight: 600; border: 1px solid var(--you); color: var(--you); background: transparent; border-radius: 8px; padding: 7px 14px; cursor: pointer; }
 .btn.solid { background: var(--you); color: var(--panel); }
@@ -114,11 +114,46 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .stats.mini .stat { padding: 10px 12px; background: var(--bg); }
 .stats.mini .v { font-size: 1.35rem; }
 .msg video.pic { display: block; max-width: 100%; max-height: 360px; border-radius: 10px; background: #000; }
-.tabs { display: flex; gap: 4px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2; }
-.tabs button { flex: 1; font: inherit; font-weight: 600; color: var(--muted); background: transparent; border: 0; border-radius: 9px; padding: 9px 12px; cursor: pointer; }
-.tabs button[aria-selected="true"] { background: var(--you); color: var(--panel); }
-.tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.view { display: flex; flex-direction: column; gap: 16px; }
+.view { display: flex; flex-direction: column; gap: 14px; }
+.wrap { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)) !important; }
+.viewhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.viewhead h1, .contacthead h1 { font-size: 1.8rem; }
+.btn { min-height: 40px; }
+.btn.danger { border-color: var(--them); color: var(--them); }
+.card.flush { padding: 0; overflow: hidden; }
+.card h2 { margin-bottom: 6px; }
+.bottomnav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; background: var(--panel); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.bottomnav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 0 10px; font: inherit; font-size: 0.75rem; font-weight: 500; color: var(--muted); background: transparent; border: 0; cursor: pointer; }
+.bottomnav .ico { display: flex; align-items: center; justify-content: center; width: 56px; height: 28px; border-radius: 14px; }
+.bottomnav svg, .back svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.bottomnav button[aria-selected="true"] { color: var(--you); font-weight: 600; }
+.bottomnav button[aria-selected="true"] .ico { background: var(--you-soft); }
+.bottomnav button:focus-visible, .subtabs button:focus-visible, .back:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.contacthead { display: flex; flex-direction: column; gap: 2px; }
+.contacthead .sub { margin: 0; }
+.back { align-self: flex-start; display: flex; align-items: center; gap: 2px; min-height: 36px; padding: 0; font: inherit; font-size: 0.9rem; font-weight: 600; color: var(--you); background: none; border: 0; cursor: pointer; }
+.back svg { width: 18px; height: 18px; }
+#contactbody { display: flex; flex-direction: column; gap: 12px; }
+.subtabs { display: flex; gap: 4px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.subtabs button { flex: 1; min-height: 40px; font: inherit; font-size: 0.9rem; font-weight: 600; color: var(--muted); background: transparent; border: 0; border-radius: 9px; cursor: pointer; }
+.subtabs button[aria-selected="true"] { background: var(--you); color: var(--panel); }
+.pane { display: flex; flex-direction: column; gap: 12px; }
+#pane-info .record { margin: 0; background: var(--panel); }
+#pane-convos .reader { max-height: none; overflow: visible; }
+.only { margin: 0; }
+.top { display: flex; flex-direction: column; gap: 6px; }
+.top button { display: grid; grid-template-columns: minmax(90px, 32%) minmax(0, 1fr) 48px; gap: 10px; align-items: center; min-height: 36px; font: inherit; font-size: 0.9rem; color: var(--fg); background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.top .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top .track { height: 10px; border-radius: 5px; background: var(--bg); display: flex; }
+.top .fill { border-radius: 5px; background: var(--you); }
+.top .ct { text-align: right; font-family: var(--mono); font-size: 0.85rem; }
+.setting { display: flex; flex-direction: column; gap: 8px; }
+.setting p { margin: 0; }
+.setrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.version { text-align: center; color: var(--muted); font-size: 0.8rem; margin: 0; }
+.linkbtn { font: inherit; color: var(--you); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
+.drop h2 { width: 100%; }
+#contacts tr { cursor: pointer; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 12px; }
 .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
 .stat .k { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
@@ -162,83 +197,110 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
 
 
 <div class="wrap">
-  <header>
-    <h1>Tof<span>TextNow conversation records</span></h1>
-    <span class="privacy" id="privacy">Everything stays on this device. Nothing is uploaded.</span>
-  </header>
-
-
   <p class="example" id="example" hidden><span class="badge">Example data</span> <span class="privacy">Add your exports in Settings to replace it.</span></p>
-
-  <nav class="tabs" role="tablist" aria-label="Views">
-    <button type="button" role="tab" id="tab-convos" aria-controls="view-convos" aria-selected="true">Contacts</button>
-    <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false">Stats</button>
-    <button type="button" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false">Settings</button>
-  </nav>
-
   <p class="status" id="status" role="status"></p>
 
-  <div class="view" id="view-convos" role="tabpanel" aria-labelledby="tab-convos">
-  <section class="grid">
-    <div class="card">
-      <div class="cardhead"><h2>Contacts</h2><button type="button" class="btn" id="newperson">New contact</button></div>
-      <p class="sub">Pick one to open its record and messages.</p>
-      <button type="button" class="btn" id="usecontacts" hidden>Suggest names from my phone contacts</button>
-      <input type="search" id="search" class="search" placeholder="Search names, numbers, tags, notes" aria-label="Search contacts">
-      <div class="tablewrap">
-        <table>
-          <thead><tr><th>Contact</th><th>Messages</th><th>Last message</th></tr></thead>
-          <tbody id="contacts"></tbody>
-        </table>
+  <div class="view" id="view-contacts" role="tabpanel" aria-labelledby="tab-contacts">
+    <div class="viewhead"><h1>Contacts</h1><button type="button" class="btn solid" id="newperson">New contact</button></div>
+    <button type="button" class="btn" id="usecontacts" hidden>Suggest names from my phone contacts</button>
+    <input type="search" id="search" class="search" placeholder="Search names, numbers, tags, notes" aria-label="Search contacts">
+    <div class="card flush">
+      <table>
+        <thead><tr><th>Contact</th><th>Messages</th><th>Last</th></tr></thead>
+        <tbody id="contacts"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="view" id="view-contact" role="tabpanel" aria-labelledby="tab-contact" hidden>
+    <div class="contacthead">
+      <button type="button" class="back" id="back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>All contacts</button>
+      <h1 id="readertitle">Contact</h1>
+      <p class="sub" id="readersub">Pick someone in Contacts.</p>
+    </div>
+    <div id="contactbody">
+      <nav class="subtabs" role="tablist" aria-label="Contact sections">
+        <button type="button" role="tab" id="sub-info" aria-controls="pane-info" aria-selected="true">Info</button>
+        <button type="button" role="tab" id="sub-convos" aria-controls="pane-convos" aria-selected="false">Conversations</button>
+        <button type="button" role="tab" id="sub-cstats" aria-controls="pane-cstats" aria-selected="false">Stats</button>
+      </nav>
+      <div class="chips only" id="only" role="group" aria-label="Show messages from" hidden></div>
+      <div class="pane" id="pane-info" role="tabpanel" aria-labelledby="sub-info">
+        <form class="record" id="record" autocomplete="off"></form>
+      </div>
+      <div class="pane" id="pane-convos" role="tabpanel" aria-labelledby="sub-convos" hidden>
+        <div class="reader" id="reader"></div>
+      </div>
+      <div class="pane" id="pane-cstats" role="tabpanel" aria-labelledby="sub-cstats" hidden>
+        <div class="stats mini" id="cstats-tiles"></div>
+        <div class="card">
+          <h2>Messages per day</h2>
+          <p class="sub" id="cdaysub"></p>
+          <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
+          <div class="chart" id="cdaily"></div>
+        </div>
+        <div class="card">
+          <h2>When you text</h2>
+          <div class="chart" id="chours"></div>
+        </div>
       </div>
     </div>
-    <div class="card">
-      <h2 id="readertitle">Contact</h2>
-      <p class="sub" id="readersub">Select a contact.</p>
-      <form class="record" id="record" autocomplete="off" hidden></form>
-      <details class="cstats" id="cstats" open hidden>
-        <summary>Stats for this contact</summary>
-        <div class="stats mini" id="cstats-tiles"></div>
-        <h3>Messages per day</h3>
-        <p class="sub" id="cdaysub"></p>
-        <div class="chart" id="cdaily"></div>
-        <h3>When you text</h3>
-        <div class="chart" id="chours"></div>
-      </details>
-      <div class="chips only" id="only" role="group" aria-label="Show messages from" hidden></div>
-      <div class="reader" id="reader"></div>
-    </div>
-  </section>
+    <div class="card empty-contact" id="nocontact" hidden><p>Pick someone in <button type="button" class="linkbtn" id="gocontacts">Contacts</button> to see their info, conversations and stats.</p></div>
   </div>
 
   <div class="view" id="view-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
-  <section class="stats" id="stats" aria-label="Summary"></section>
-
-  <section class="grid">
+    <div class="viewhead"><h1>Stats</h1></div>
+    <p class="sub" id="statssub"></p>
+    <section class="stats" id="stats" aria-label="Summary"></section>
     <div class="card">
-      <h2>Messages per day</h2>
-      <p class="sub" id="daysub">Sent and received, stacked.</p>
-      <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
-      <div class="chart" id="daily"></div>
+      <h2>Most messaged</h2>
+      <div class="top" id="top"></div>
     </div>
-    <div class="card">
-      <h2>When you text</h2>
-      <p class="sub" id="hoursub">Messages by hour of day, in your local time.</p>
-      <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
-      <div class="chart" id="hours"></div>
-    </div>
-  </section>
+    <section class="grid">
+      <div class="card">
+        <h2>Messages per day</h2>
+        <p class="sub" id="daysub">Sent and received, stacked.</p>
+        <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
+        <div class="chart" id="daily"></div>
+      </div>
+      <div class="card">
+        <h2>When you text</h2>
+        <p class="sub" id="hoursub">Messages by hour of day, in your local time.</p>
+        <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
+        <div class="chart" id="hours"></div>
+      </div>
+    </section>
   </div>
+
   <div class="view" id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
-    <section class="drop" id="drop" aria-label="Add TextNow exports">
-    <p><strong>Drop TextNow exports here</strong>, one or many. In TextNow, open a conversation, tap Options, then Export Conversation, and pick Tof in the Share menu. Or save the file and choose it here.</p>
-    <label class="btn solid" for="file">Choose files</label>
-    <button class="btn" id="install" type="button" hidden>Install Tof</button>
-    <input type="file" id="file" multiple accept=".html,.htm,.txt,text/html,text/plain">
-    <button class="btn" id="clear" type="button">Clear all</button>
-  </section>
+    <div class="viewhead"><h1>Settings</h1></div>
+    <section class="drop" id="drop" aria-label="Import from TextNow">
+      <h2>Import from TextNow</h2>
+      <p>In TextNow, open a conversation, tap Options, then Export Conversation, and pick Tof in the Share menu. Or save the file and choose it here.</p>
+      <label class="btn solid" for="file">Choose files</label>
+      <button class="btn" id="install" type="button" hidden>Install Tof</button>
+      <input type="file" id="file" multiple accept=".html,.htm,.txt,text/html,text/plain">
+    </section>
+    <section class="card setting" id="phonecard">
+      <h2>Phone contacts</h2>
+      <div class="setrow"><span id="phonestate">Access: checking…</span><button type="button" class="btn" id="phonecheck">Check again</button></div>
+      <p class="sub">Tof uses your phone's names only as suggestions when you choose a number's contact.</p>
+    </section>
+    <section class="card setting">
+      <h2>Data on this phone</h2>
+      <p id="datasummary"></p>
+      <div><button class="btn danger" id="clear" type="button">Clear all</button></div>
+    </section>
+    <p class="version" id="version"></p>
   </div>
 </div>
+
+<nav class="bottomnav" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tab-contacts" aria-controls="view-contacts" aria-selected="true"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1"/><circle cx="9" cy="8" r="3.5"/><path d="M22 19v-1a4 4 0 0 0-3-3.87"/><path d="M16 4.13a4 4 0 0 1 0 7.75"/></svg></span>Contacts</button>
+    <button type="button" role="tab" id="tab-contact" aria-controls="view-contact" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 17a3.5 3.5 0 0 1 7 0"/><path d="M15 10h4M15 14h3"/></svg></span>Contact</button>
+    <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M2 20h20"/></svg></span>Stats</button>
+    <button type="button" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></span>Settings</button>
+</nav>
 
 <dialog class="dlg" id="importdlg" aria-labelledby="importtitle">
   <h2 id="importtitle">Imported from TextNow</h2>

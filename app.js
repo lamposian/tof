@@ -176,7 +176,7 @@
     const lastN = added.length ? added[added.length - 1].contact : null;
     if (lastN) { const id = personOf(lastN); sel = id ? 'p:' + id : 'n:' + lastN; only = ''; }
     setStatus(added.length ? `Imported ${fmt.format(fresh.length)} new message${fresh.length === 1 ? '' : 's'}.` : 'Nothing imported.', failed.length > 0);
-    showTab('convos');
+    showTab('contact');
     render();
     showImport();
     saveMediaFor(fresh);
@@ -266,7 +266,7 @@
     contactsState = state;
     Object.assign(phoneNames, names || {});
     if (state === 'denied') setStatus("Tof can't read your contacts. To see suggestions from them, allow Contacts for Tof in Settings > Apps > Tof > Permissions.", true);
-    renderContacts(); renderReader();
+    renderContacts(); renderReader(); renderSettings();
     if (imported) showImport();
   };
 
@@ -315,7 +315,24 @@
       ['Contacts', fmt.format(all.length), all[0] ? `most: ${esc(all[0].id ? nameOf(all[0].id) : all[0].n)}` : '—'],
       ['Per day', total ? (total / spanDays).toFixed(1) : '—', first ? `${dayFmt.format(first)} to ${dayFmt.format(last)}` : '—'],
     ].map(([k, v, n]) => `<div class="stat"><span class="k">${k}</span><span class="v">${v}</span><span class="n">${n}</span></div>`).join('');
+    $('statssub').textContent = first ? `All contacts and new numbers, ${dayFmt.format(first)} to ${dayFmt.format(last)}.` : 'No messages yet.';
+    const most = all.slice(0, 8), top = Math.max(1, ...most.map(e => e.total));
+    $('top').innerHTML = most.length ? most.map(e => `<button type="button" data-k="${esc(e.key)}"><span class="nm">${esc(e.id ? nameOf(e.id) : e.n)}</span><span class="track"><span class="fill" style="width:${Math.max(2, Math.round(e.total / top * 100))}%"></span></span><span class="ct">${fmt.format(e.total)}</span></button>`).join('') : '<p class="empty">No messages yet.</p>';
     if (!$('view-stats').hidden) { drawDaily(); drawHours(); }
+    renderSettings();
+  }
+
+  function renderSettings() {
+    const urls = [...mediaIdx.values()].filter(m => m.status === 'saved');
+    const mb = urls.reduce((n, m) => n + (m.size || 0), 0) / 1048576;
+    const nums = new Set([...messages.map(m => m.contact), ...numbers.keys()]).size;
+    $('datasummary').textContent = isExample ? 'Only example data so far. Nothing is uploaded.'
+      : `${fmt.format(people.size)} contact${people.size === 1 ? '' : 's'}, ${fmt.format(nums)} number${nums === 1 ? '' : 's'}, ${fmt.format(messages.length)} message${messages.length === 1 ? '' : 's'}${native ? `, ${fmt.format(urls.length)} saved picture${urls.length === 1 ? '' : 's'} or video${urls.length === 1 ? '' : 's'} (${mb < 1 ? mb.toFixed(1) : Math.round(mb)} MB)` : ''}. Nothing is uploaded.`;
+    $('phonecard').hidden = !native || !native.lookupContacts;
+    $('phonestate').innerHTML = `Access: <b>${contactsState === 'granted' ? 'Allowed' : contactsState === 'denied' ? 'Not allowed' : 'Not asked yet'}</b>`;
+    $('phonecheck').textContent = contactsState === 'granted' ? 'Check again' : 'Allow access';
+    let v = ''; try { v = native && native.version ? native.version() : ''; } catch (e) {}
+    $('version').textContent = v ? `Tof ${v}` : 'Tof';
   }
 
   function matches(e) {
@@ -332,7 +349,7 @@
     if ((!sel || !all.some(e => e.key === sel)) && all[0]) { sel = (ppl[0] || all[0]).key; only = ''; }
     const max = Math.max(1, ...all.map(e => e.total));
     $('usecontacts').hidden = !native || isExample || contactsState === 'granted' || !all.length;
-    const cells = e => `<td class="num">${e.total ? fmt.format(e.total) : '—'}<span class="bar" style="width:${e.total ? Math.max(2, e.total / max * 50) : 0}px"></span></td><td class="num">${e.last ? dayFmt.format(e.last) : '—'}</td>`;
+    const cells = e => `<td class="num">${e.total ? fmt.format(e.total) : '—'}</td><td class="num">${e.last ? dayFmt.format(e.last) : '—'}</td>`;
     const looseRows = loose.filter(matches).map(e => `<tr tabindex="0" data-k="${esc(e.key)}" class="sub${e.key === sel ? ' sel' : ''}"><td><div class="who"><b>${esc(e.n)}</b>${phoneNames[e.n] ? `<small>Phone contacts: ${esc(phoneNames[e.n])}</small>` : '<small>No contact yet</small>'}</div></td>${cells(e)}</tr>`).join('');
     const pplRows = ppl.filter(matches).map(e => {
       const tags = tagsOf(e.id);
@@ -393,9 +410,8 @@
   const dur = ms => ms < 36e5 ? `${Math.max(1, Math.round(ms / 6e4))} min` : ms < 864e5 ? `${(ms / 36e5).toFixed(1)} h` : `${(ms / 864e5).toFixed(1)} d`;
   const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y), h = s.length >> 1; return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2; };
   function renderConvoStats(msgs) {
-    const box = $('cstats');
-    box.hidden = !msgs.length;
-    if (!msgs.length || !box.open) return;
+    if ($('view-contact').hidden || sub !== 'cstats') return;
+    if (!msgs.length) { $('cstats-tiles').innerHTML = '<p class="empty">No messages yet.</p>'; $('cdaily').innerHTML = $('chours').innerHTML = ''; $('cdaysub').textContent = ''; return; }
     const you = msgs.filter(m => m.you).length, them = msgs.length - you;
     const days = new Set(msgs.map(m => localDay(m.when))).size;
     const first = msgs[0].when, last = msgs[msgs.length - 1].when;
@@ -439,18 +455,17 @@
     const { id, ns, msgs } = scope();
     const title = !sel ? 'Contact' : id ? nameOf(id) : sel.slice(2);
     $('readertitle').textContent = title;
-    $('readersub').textContent = !sel ? 'Select a contact.'
+    $('contactbody').hidden = !sel; $('nocontact').hidden = !!sel; $('back').hidden = !sel;
+    $('readersub').textContent = !sel ? ''
       : !id ? `New number · ${fmt.format(msgs.length)} message${msgs.length === 1 ? '' : 's'}.`
       : `${ns.length} number${ns.length === 1 ? '' : 's'} · ${fmt.format(msgs.length)} message${msgs.length === 1 ? '' : 's'}${only ? ` with ${only}` : ''}, oldest first.`;
     const active = document.activeElement && $('record').contains(document.activeElement) ? document.activeElement.id : null;
-    $('record').hidden = !sel;
     if (sel) id ? renderPerson(id, msgs) : renderAssign(sel.slice(2), msgs);
     if (active && $(active)) $(active).focus();
-    $('cstats').querySelector('summary').textContent = id ? 'Stats for this contact' : 'Stats for this number';
     renderConvoStats(msgs);
     // A contact with several numbers can show all their messages together or one number's at a time.
     const multi = id && ns.length > 1;
-    $('only').hidden = !multi;
+    $('only').hidden = !multi || sub === 'info';
     $('only').innerHTML = multi ? [['', 'All numbers'], ...ns.map(n => [n, num(n).label || n])].map(([v, t]) => `<button type="button" class="chip pick${v === only ? ' on' : ''}" data-only="${esc(v)}" aria-pressed="${v === only}">${esc(t)}</button>`).join('') : '';
     const tag = multi && !only;
     $('reader').innerHTML = msgs.length ? msgs.map(m => `<div class="msg ${m.you ? 'you' : 'them'}">${bodyHtml(m)}<time>${fullFmt.format(m.when)}${tag ? ` · ${esc(num(m.contact).label || m.contact)}` : ''}</time></div>`).join('')
@@ -461,7 +476,21 @@
     }, { once: true }));
     document.querySelectorAll('#contacts tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.k === sel));
   }
-  function select(key) { flushSave(); sel = key; only = ''; renderContacts(); renderReader(); }
+  function select(key) { flushSave(); sel = key; only = ''; renderContacts(); showTab('contact'); renderReader(); window.scrollTo(0, 0); }
+  // Contact subtabs: Info, Conversations, Stats.
+  let sub = 'info';
+  try { const v = localStorage.getItem('tof-sub'); if (['info', 'convos', 'cstats'].includes(v)) sub = v; } catch (e) {}
+  function showSub(name) {
+    sub = name;
+    ['info', 'convos', 'cstats'].forEach(t => { $('sub-' + t).setAttribute('aria-selected', t === name); $('pane-' + t).hidden = t !== name; });
+    try { localStorage.setItem('tof-sub', name); } catch (e) {}
+    renderReader();
+  }
+  ['info', 'convos', 'cstats'].forEach(t => $('sub-' + t).addEventListener('click', () => showSub(t)));
+  ['info', 'convos', 'cstats'].forEach(t => { $('sub-' + t).setAttribute('aria-selected', t === sub); $('pane-' + t).hidden = t !== sub; });
+  $('back').addEventListener('click', () => showTab('contacts'));
+  $('gocontacts').addEventListener('click', () => showTab('contacts'));
+  $('top').addEventListener('click', e => { const b = e.target.closest('button'); if (b && b.dataset.k) select(b.dataset.k); });
 
   // ---- Editing contacts ----
   const dirty = new Set();
@@ -497,7 +526,7 @@
   $('newperson').addEventListener('click', () => {
     if (isExample) return;
     select('p:' + createPerson(''));
-    showTab('convos');
+    showSub('info');
     $('f-name').focus();
   });
   $('only').addEventListener('click', e => { const v = e.target.dataset.only; if (v != null) { only = v; renderReader(); } });
@@ -674,17 +703,17 @@
 
   // ---- Tabs ----
   function showTab(name) {
-    ['convos', 'stats', 'settings'].forEach(t => {
+    ['contacts', 'contact', 'stats', 'settings'].forEach(t => {
       const on = t === name;
       $('tab-' + t).setAttribute('aria-selected', on);
       $('view-' + t).hidden = !on;
     });
     if (name === 'stats') { drawDaily(); drawHours(); }
+    window.scrollTo(0, 0);
     try { localStorage.setItem('tof-tab', name); } catch (e) {}
   }
-  $('tab-convos').addEventListener('click', () => { showTab('convos'); renderReader(); });
-  $('cstats').addEventListener('toggle', () => { if ($('cstats').open) renderReader(); try { localStorage.setItem('tof-cstats', $('cstats').open ? '1' : '0'); } catch (e) {} });
-  try { if (localStorage.getItem('tof-cstats') === '0') $('cstats').open = false; } catch (e) {}
+  $('tab-contacts').addEventListener('click', () => showTab('contacts'));
+  $('tab-contact').addEventListener('click', () => { showTab('contact'); renderReader(); });
   $('tab-stats').addEventListener('click', () => showTab('stats'));
   $('tab-settings').addEventListener('click', () => showTab('settings'));
 
@@ -695,6 +724,7 @@
   drop.addEventListener('drop', e => { if (e.dataTransfer.files.length) addFiles([...e.dataTransfer.files]); });
   $('file').addEventListener('change', e => { if (e.target.files.length) addFiles([...e.target.files]); e.target.value = ''; });
   $('usecontacts').addEventListener('click', () => lookupContacts(true));
+  $('phonecheck').addEventListener('click', () => lookupContacts(true));
   $('search').addEventListener('input', e => { query = e.target.value.trim(); renderContacts(); });
 
   // Clearing deletes saved records and media, so it takes a second tap.
@@ -719,7 +749,7 @@
   const pick = tr => { if (tr && tr.dataset.k) select(tr.dataset.k); };
   $('contacts').addEventListener('click', e => pick(e.target.closest('tr')));
   $('contacts').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(e.target.closest('tr')); } });
-  let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!$('view-stats').hidden) { drawDaily(); drawHours(); } else renderConvoStats(scope().msgs); }, 120); });
+  let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!$('view-stats').hidden) { drawDaily(); drawHours(); } else if (!$('view-contact').hidden) renderConvoStats(scope().msgs); }, 120); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) flushSave();
     // Back from the Contacts app: check again so a contact that was just saved stops being offered.
@@ -787,7 +817,7 @@
     const f = meta.find(m => m.id === 'fields'); if (f) fieldDefs = f.list || [];
     if (!messages.length && !people.size) { messages = exampleData(); isExample = true; exampleContacts(); }
     if (!db) setStatus('This browser is not keeping data, so contacts last until you close Tof.', true);
-    try { { const t = localStorage.getItem('tof-tab'); if (t === 'stats' || t === 'settings') showTab(t); } } catch (e) {}
+    try { { const t = localStorage.getItem('tof-tab'); if (['contacts', 'contact', 'stats', 'settings'].includes(t)) showTab(t); } } catch (e) {}
     render();
     ready();
     saveMediaFor(messages);
