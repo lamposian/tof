@@ -46,6 +46,7 @@ h2 { font-family: var(--display); font-weight: 500; font-size: 1.1rem; margin: 0
 .btn:hover { filter: brightness(1.08); }
 #file { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .status { width: 100%; font-size: 0.85rem; color: var(--muted); margin: 0; }
+.status:empty { display: none; }
 .status.warn { color: var(--them); }
 .badge { display: inline-block; font-size: 0.75rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--them); background: var(--them-soft); border-radius: 999px; padding: 2px 10px; }
 
@@ -139,21 +140,16 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
     <span class="privacy" id="privacy">Everything stays on this device. Nothing is uploaded.</span>
   </header>
 
-  <section class="drop" id="drop" aria-label="Add TextNow exports">
-    <p><strong>Drop TextNow exports here</strong>, one or many. In TextNow, open a conversation, tap Options, then Export Conversation, and pick Tof in the Share menu. Or save the file and choose it here.</p>
-    <label class="btn solid" for="file">Choose files</label>
-    <button class="btn" id="install" type="button" hidden>Install Tof</button>
-    <input type="file" id="file" multiple accept=".html,.htm,.txt,text/html,text/plain">
-    <button class="btn" id="clear" type="button">Clear all</button>
-    <p class="status" id="status"></p>
-  </section>
 
-  <p class="example" id="example" hidden><span class="badge">Example data</span> <span class="privacy">Add your exports above to replace it.</span></p>
+  <p class="example" id="example" hidden><span class="badge">Example data</span> <span class="privacy">Add your exports in Settings to replace it.</span></p>
 
   <nav class="tabs" role="tablist" aria-label="Views">
     <button type="button" role="tab" id="tab-convos" aria-controls="view-convos" aria-selected="true">Conversations</button>
     <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false">Stats</button>
+    <button type="button" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false">Settings</button>
   </nav>
+
+  <p class="status" id="status" role="status"></p>
 
   <div class="view" id="view-convos" role="tabpanel" aria-labelledby="tab-convos">
   <section class="grid">
@@ -203,6 +199,15 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
       <div class="legend"><span><i style="background:var(--you)"></i>You</span><span><i style="background:var(--them)"></i>Them</span></div>
       <div class="chart" id="hours"></div>
     </div>
+  </section>
+  </div>
+  <div class="view" id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+    <section class="drop" id="drop" aria-label="Add TextNow exports">
+    <p><strong>Drop TextNow exports here</strong>, one or many. In TextNow, open a conversation, tap Options, then Export Conversation, and pick Tof in the Share menu. Or save the file and choose it here.</p>
+    <label class="btn solid" for="file">Choose files</label>
+    <button class="btn" id="install" type="button" hidden>Install Tof</button>
+    <input type="file" id="file" multiple accept=".html,.htm,.txt,text/html,text/plain">
+    <button class="btn" id="clear" type="button">Clear all</button>
   </section>
   </div>
 </div>

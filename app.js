@@ -467,7 +467,7 @@
 
   // ---- Tabs ----
   function showTab(name) {
-    ['convos', 'stats'].forEach(t => {
+    ['convos', 'stats', 'settings'].forEach(t => {
       const on = t === name;
       $('tab-' + t).setAttribute('aria-selected', on);
       $('view-' + t).hidden = !on;
@@ -479,6 +479,7 @@
   $('cstats').addEventListener('toggle', () => { if ($('cstats').open) renderReader(); try { localStorage.setItem('tof-cstats', $('cstats').open ? '1' : '0'); } catch (e) {} });
   try { if (localStorage.getItem('tof-cstats') === '0') $('cstats').open = false; } catch (e) {}
   $('tab-stats').addEventListener('click', () => showTab('stats'));
+  $('tab-settings').addEventListener('click', () => showTab('settings'));
 
   // ---- Wiring ----
   const drop = $('drop');
@@ -534,7 +535,7 @@
     const f = meta.find(m => m.id === 'fields'); if (f) fieldDefs = f.list || [];
     if (!messages.length) { messages = exampleData(); isExample = true; }
     if (!db) setStatus('This browser is not keeping data, so conversations last until you close Tof.', true);
-    try { if (localStorage.getItem('tof-tab') === 'stats') showTab('stats'); } catch (e) {}
+    try { { const t = localStorage.getItem('tof-tab'); if (t === 'stats' || t === 'settings') showTab(t); } } catch (e) {}
     render();
     ready();
     saveMediaFor(messages);
