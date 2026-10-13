@@ -25,10 +25,15 @@ jobs:
 
       # Keep one signing key across builds so new versions install over old ones.
       - name: Restore signing key
+        id: key
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: tof-debug-keystore-v1
+          path: android/tof-signing.jks
+          key: tof-signing-key-v1
+
+      - name: Create signing key
+        if: steps.key.outputs.cache-hit != 'true'
+        run: keytool -genkeypair -keystore android/tof-signing.jks -storetype PKCS12 -alias tof -keyalg RSA -keysize 2048 -validity 10000 -storepass tofsigning -keypass tofsigning -dname "CN=Tof"
 
       - name: Build APK
         run: gradle -p android assembleDebug --no-daemon

@@ -14,6 +14,19 @@ android {
         versionName "0.2"
     }
 
+    // CI keeps this key between builds so updates install over the previous version.
+    def signingFile = rootProject.file("tof-signing.jks")
+    if (signingFile.exists()) {
+        signingConfigs {
+            debug {
+                storeFile signingFile
+                storePassword "tofsigning"
+                keyAlias "tof"
+                keyPassword "tofsigning"
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
