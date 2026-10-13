@@ -49,6 +49,8 @@ public class MainActivity extends Activity {
     private static final int PICK_FILES = 1;
     private static final int ASK_CONTACTS = 2;
     private static final int PICK_LOG_FOLDER = 3;
+    private static final int PICK_MEDIA_FOLDER = 4;
+    private static final int SAVE_MEDIA_AS = 5;
     private static final String LOG_NAME = "tof-log.txt";
     private static final int MAX_BYTES = 20 * 1024 * 1024;
     private static final long MAX_MEDIA_BYTES = 300L * 1024 * 1024;
@@ -61,9 +63,12 @@ public class MainActivity extends Activity {
     private boolean pageReady;
     private File mediaDir;
     private String pendingLookup;
+    private String pendingSaveAs;
     private final ExecutorService downloads = Executors.newFixedThreadPool(3);
     // Log file writes happen one at a time, in order.
     private final ExecutorService logIo = Executors.newSingleThreadExecutor();
+    // Copies into the chosen media folder also happen one batch at a time.
+    private final ExecutorService mediaIo = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -169,6 +174,30 @@ public class MainActivity extends Activity {
             }
             return;
         }
+        if (requestCode == PICK_MEDIA_FOLDER) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri tree = data.getData();
+                try {
+                    getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    prefs().edit().putString("mediaTree", tree.toString()).apply();
+                } catch (Exception ignored) { }
+                String js = "window.__tofMediaFolder && window.__tofMediaFolder(" + JSONObject.quote(mediaTree() == null ? "" : folderName(mediaTree())) + ")";
+                web.post(() -> web.evaluateJavascript(js, null));
+            }
+            return;
+        }
+        if (requestCode == SAVE_MEDIA_AS) {
+            String file = pendingSaveAs;
+            pendingSaveAs = null;
+            Uri dest = resultCode == RESULT_OK && data != null ? data.getData() : null;
+            if (dest == null || file == null) return;
+            mediaIo.execute(() -> {
+                boolean ok = copyTo(new File(mediaDir, file), dest);
+                String js = "window.__tofSavedAs && window.__tofSavedAs(" + ok + "," + JSONObject.quote(nameOf(dest)) + ")";
+                web.post(() -> web.evaluateJavascript(js, null));
+            });
+            return;
+        }
         if (requestCode != PICK_FILES || pendingChooser == null) return;
         Uri[] result = null;
         if (resultCode == RESULT_OK && data != null) {
@@ -188,6 +217,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         downloads.shutdownNow();
         logIo.shutdown();
+        mediaIo.shutdown();
         super.onDestroy();
     }
 
@@ -294,6 +324,48 @@ public class MainActivity extends Activity {
             downloads.execute(() -> check(url, etag, lastMod));
         }
 
+        /** Asks for a folder to keep copies of saved pictures and videos in, outside Tof's own storage. */
+        @JavascriptInterface
+        public void pickMediaFolder() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                try { startActivityForResult(i, PICK_MEDIA_FOLDER); } catch (ActivityNotFoundException ignored) { }
+            });
+        }
+
+        @JavascriptInterface
+        public String mediaFolder() {
+            Uri tree = mediaTree();
+            return tree == null ? "" : folderName(tree);
+        }
+
+        /**
+         * Copies saved files into the media folder: a JSON array of {file, name, token}. A file is skipped when
+         * the folder already has one whose name contains its token, so renamed contacts don't make duplicates.
+         * Reports back through __tofMediaCopied(tokens now in the folder, newly copied, failed).
+         */
+        @JavascriptInterface
+        public void copyMedia(String itemsJson) { mediaIo.execute(() -> copyAll(itemsJson)); }
+
+        /** Lets the person pick where to save one saved file (Android's save dialog). */
+        @JavascriptInterface
+        public void saveMediaAs(String file, String name, String mime) {
+            if (file == null || file.contains("/") || !new File(mediaDir, file).isFile()) return;
+            runOnUiThread(() -> {
+                pendingSaveAs = file;
+                Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType(mime == null || mime.isEmpty() ? "application/octet-stream" : mime);
+                i.putExtra(Intent.EXTRA_TITLE, name);
+                try { startActivityForResult(i, SAVE_MEDIA_AS); } catch (ActivityNotFoundException e) { pendingSaveAs = null; }
+            });
+        }
+
+        /** A short buzz, used when a long press is recognised. */
+        @JavascriptInterface
+        public void buzz() { runOnUiThread(() -> web.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)); }
+
         @JavascriptInterface
         public void clearMedia() {
             File[] files = mediaDir.listFiles();
@@ -398,6 +470,68 @@ public class MainActivity extends Activity {
             if (p.getUri().equals(tree) && p.isWritePermission()) return tree;
         }
         return null;
+    }
+
+    private Uri mediaTree() {
+        String t = prefs().getString("mediaTree", null);
+        if (t == null) return null;
+        Uri tree = Uri.parse(t);
+        for (android.content.UriPermission p : getContentResolver().getPersistedUriPermissions()) {
+            if (p.getUri().equals(tree) && p.isWritePermission()) return tree;
+        }
+        return null;
+    }
+
+    private boolean copyTo(File src, Uri dest) {
+        try (InputStream in = new java.io.FileInputStream(src); OutputStream out = getContentResolver().openOutputStream(dest, "wt")) {
+            if (out == null) return false;
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void copyAll(String itemsJson) {
+        JSONArray done = new JSONArray();
+        int failed = 0, made = 0;
+        Uri tree = mediaTree();
+        if (tree != null) {
+            String parent = DocumentsContract.getTreeDocumentId(tree);
+            Uri parentDoc = DocumentsContract.buildDocumentUriUsingTree(tree, parent);
+            List<String> have = new ArrayList<>();
+            String[] cols = { DocumentsContract.Document.COLUMN_DISPLAY_NAME };
+            try (Cursor c = getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent), cols, null, null, null)) {
+                while (c != null && c.moveToNext()) if (c.getString(0) != null) have.add(c.getString(0));
+            } catch (Exception ignored) { }
+            try {
+                JSONArray items = new JSONArray(itemsJson);
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject it = items.getJSONObject(i);
+                    String file = it.optString("file"), name = it.optString("name"), token = it.optString("token");
+                    File src = new File(mediaDir, file);
+                    if (file.isEmpty() || file.contains("/") || token.isEmpty() || !src.isFile()) continue;
+                    boolean present = false;
+                    for (String h : have) if (h.contains(token)) { present = true; break; }
+                    if (!present) {
+                        Uri dest = null;
+                        try { dest = DocumentsContract.createDocument(getContentResolver(), parentDoc, mimeForExt(file), name); } catch (Exception ignored) { }
+                        if (dest == null || !copyTo(src, dest)) {
+                            failed++;
+                            if (dest != null) { try { DocumentsContract.deleteDocument(getContentResolver(), dest); } catch (Exception ignored) { } }
+                            continue;
+                        }
+                        have.add(name);
+                        made++;
+                    }
+                    done.put(token);
+                }
+            } catch (Exception ignored) { }
+        }
+        String js = "window.__tofMediaCopied && window.__tofMediaCopied(" + done + "," + made + "," + failed + ")";
+        web.post(() -> web.evaluateJavascript(js, null));
     }
 
     private String folderName(Uri tree) {

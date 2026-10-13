@@ -177,7 +177,22 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .mplay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.6rem; text-shadow: 0 1px 4px rgba(0,0,0,.6); }
 .mediadlg #mediaview img, .mediadlg #mediaview video { display: block; max-width: 100%; max-height: 60vh; margin: 0 auto 10px; border-radius: 8px; background: #000; }
 .mediadlg .dlgfoot { gap: 8px; }
-.msg.flash { outline: 2px solid var(--you); }
+.msg.flash { outline: 3px solid var(--you); outline-offset: 3px; box-shadow: 0 0 0 9px var(--you-soft); }
+.mtile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.mtile img, .mtile video { pointer-events: none; }
+.mmonth { font-size: 0.9rem; font-weight: 600; color: var(--muted); margin: 14px 0 6px; }
+.mfilter { flex-wrap: nowrap; overflow-x: auto; margin: 4px 0 6px; padding-bottom: 2px; }
+.mfilter .pick { flex: none; }
+.mediatop { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+.mediastage { display: flex; align-items: center; gap: 4px; }
+.mediastage #mediaview { flex: 1; min-width: 0; }
+.mstep { flex: none; width: 36px; height: 44px; font: inherit; font-size: 1.6rem; line-height: 1; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.mstep:disabled { opacity: .3; cursor: default; }
+.jumpnote { position: fixed; left: 12px; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); z-index: 6; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-radius: 10px; background: #17222a; color: #fff; font-size: 0.9rem; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+.jumpnote[hidden] { display: none; }
+.jumpnote .linkbtn { color: #9fdde3; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.bottomnav button { font-size: 0.7rem !important; min-width: 0; }
+.bottomnav .ico { width: 44px !important; }
 .version { text-align: center; color: var(--muted); font-size: 0.8rem; margin: 0; }
 .linkbtn { font: inherit; color: var(--you); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
 .drop h2 { width: 100%; }
@@ -281,6 +296,15 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
     <div class="card empty-contact" id="nocontact" hidden><p>Pick someone in <button type="button" class="linkbtn" id="gocontacts">Contacts</button> to see their info, conversations and stats.</p></div>
   </div>
 
+  <div class="view" id="view-media" role="tabpanel" aria-labelledby="tab-media" hidden>
+    <div class="viewhead"><h1>Media</h1></div>
+    <p class="sub" id="allmediasub"></p>
+    <div class="chips only mfilter" id="mwho" role="group" aria-label="Show media from"></div>
+    <div class="chips only mfilter" id="mkind" role="group" aria-label="Kind"></div>
+    <div id="allmedia"></div>
+    <div><button type="button" class="btn" id="mediamore" hidden>Show more</button></div>
+  </div>
+
   <div class="view" id="view-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
     <div class="viewhead"><h1>Stats</h1></div>
     <p class="sub" id="statssub"></p>
@@ -332,6 +356,11 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
       <div class="setrow"><span id="logfolder"></span><button type="button" class="btn" id="pickfolder">Choose folder</button></div>
       <p class="sub">Uninstalling Tof deletes its own storage. A copy of the log in a folder you choose, like Documents, stays on the phone. After reinstalling, choose the same folder to bring the log back.</p>
     </section>
+    <section class="card setting" id="mediacard">
+      <h2>Media folder</h2>
+      <div class="setrow"><span id="mediafolder"></span><button type="button" class="btn" id="pickmedia">Choose folder</button></div>
+      <p class="sub">Tof copies every picture and video it saves into the folder you choose, named by date and contact, and keeps adding new ones. The copies stay if Tof is uninstalled. To save just one, open it and tap Save a copy.</p>
+    </section>
     <section class="card setting">
       <h2>Data on this phone</h2>
       <p id="datasummary"></p>
@@ -341,18 +370,22 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   </div>
 </div>
 
+<div class="jumpnote" id="jumpnote" role="status" hidden><span id="jumptext"></span><button type="button" class="linkbtn" id="jumpback">Back to Media</button></div>
+
 <nav class="bottomnav" role="tablist" aria-label="Views">
     <button type="button" role="tab" id="tab-contacts" aria-controls="view-contacts" aria-selected="true"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1"/><circle cx="9" cy="8" r="3.5"/><path d="M22 19v-1a4 4 0 0 0-3-3.87"/><path d="M16 4.13a4 4 0 0 1 0 7.75"/></svg></span>Contacts</button>
     <button type="button" role="tab" id="tab-contact" aria-controls="view-contact" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 17a3.5 3.5 0 0 1 7 0"/><path d="M15 10h4M15 14h3"/></svg></span>Contact</button>
+    <button type="button" role="tab" id="tab-media" aria-controls="view-media" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg></span>Media</button>
     <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M2 20h20"/></svg></span>Stats</button>
     <button type="button" role="tab" id="tab-log" aria-controls="view-log" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>Log</button>
     <button type="button" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></span>Settings</button>
 </nav>
 
 <dialog class="dlg mediadlg" id="mediadlg" aria-label="Picture or video">
-  <div id="mediaview"></div>
+  <div class="mediatop"><span id="mediacount"></span><button type="button" class="btn" id="mediaclose">Close</button></div>
+  <div class="mediastage"><button type="button" class="mstep" id="mediaprev" aria-label="Previous">‹</button><div id="mediaview"></div><button type="button" class="mstep" id="medianext" aria-label="Next">›</button></div>
   <p class="impline" id="mediacap"></p>
-  <div class="dlgfoot"><button type="button" class="btn" id="mediashow">Show in conversation</button><button type="button" class="btn solid" id="mediaclose">Close</button></div>
+  <div class="dlgfoot"><button type="button" class="btn" id="mediasave" hidden>Save a copy</button><button type="button" class="btn solid" id="mediashow">Show in conversation</button></div>
 </dialog>
 
 <dialog class="dlg" id="importdlg" aria-labelledby="importtitle">

@@ -10,8 +10,8 @@ android {
         applicationId "io.github.lamposian.tof"
         minSdk 24
         targetSdk 35
-        versionCode 11
-        versionName "0.11"
+        versionCode 12
+        versionName "0.12"
     }
 
     // CI keeps this key between builds so updates install over the previous version.
