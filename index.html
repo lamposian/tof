@@ -77,6 +77,14 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .record .numrow input { flex: 1; min-width: 0; }
 .record select { font: inherit; font-size: 0.95rem; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; flex: 1; min-width: 140px; }
 .record .hint b { color: var(--fg); }
+.phonecopy { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 6px; }
+.phonecopy summary { font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+.phonecopy[open] summary { margin-bottom: 4px; }
+.pc-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; font-size: 0.9rem; }
+.pc-k { color: var(--muted); font-size: 0.8rem; padding-top: 2px; }
+.pc-v { display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.pc-v small { color: var(--muted); }
+.phonecopy .hint { margin: 4px 0 0; }
 .record .offer { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--you-soft); font-size: 0.85rem; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .btn.quiet { border-color: var(--line); color: var(--muted); }
 .btn:disabled { opacity: .5; cursor: default; }

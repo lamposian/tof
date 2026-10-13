@@ -212,6 +212,7 @@
   function assignNumber(n, to) {
     setNumber(n, { person: to }); touch(to); flushSave();
     setStatus(`Added ${n} to ${nameOf(to)}.`);
+    lookupContacts(false);
   }
 
   // ---- Media: pictures and videos are downloaded into the app so they outlive TextNow's links ----
@@ -262,13 +263,39 @@
     try { asked = localStorage.getItem('tof-contacts-asked') === '1'; localStorage.setItem('tof-contacts-asked', '1'); } catch (e) {}
     native.lookupContacts(JSON.stringify(all), ask || !asked);
   }
-  window.__tofContacts = (names, state) => {
+  window.__tofContacts = (names, state, details) => {
     contactsState = state;
     Object.assign(phoneNames, names || {});
+    copyFromPhone(details || {});
     if (state === 'denied') setStatus("Tof can't read your contacts. To see suggestions from them, allow Contacts for Tof in Settings > Apps > Tof > Permissions.", true);
     renderContacts(); renderReader(); renderSettings();
     if (imported) showImport();
   };
+
+  // A Tof contact whose number is saved on the phone keeps a copy of that phone entry.
+  // The copy is refreshed whenever Tof reads the phone's contacts; Tof never writes to them.
+  function copyFromPhone(details) {
+    if (isExample) return;
+    const changed = new Set();
+    people.forEach(p => {
+      const d = numbersOf(p.id).map(n => details[n]).find(Boolean);
+      if (!d) return;
+      const copy = { name: d.name || '', nickname: d.nickname || '', phones: d.phones || [], emails: d.emails || [], addresses: d.addresses || [], company: d.company || '', title: d.title || '', websites: d.websites || [], birthday: d.birthday || '', note: d.note || '' };
+      const prev = p.phone ? JSON.stringify({ ...p.phone, copied: 0 }) : '';
+      if (prev !== JSON.stringify({ ...copy, copied: 0 })) { p.phone = { ...copy, copied: Date.now() }; changed.add(p.id); }
+      if (!(p.fields.name || '').trim() && copy.name) { p.fields = { ...p.fields, name: copy.name }; changed.add(p.id); }
+      // The phone entry's other numbers join this contact, unless they already belong to another one.
+      copy.phones.forEach(ph => {
+        const n = normNumber(ph.value);
+        if (!n) return;
+        const owner = personOf(n), label = (ph.label || '').toLowerCase();
+        if (!owner) { setNumber(n, { person: p.id, label: num(n).label || label }); changed.add(p.id); }
+        else if (owner === p.id && !num(n).label && label) { setNumber(n, { label }); changed.add(p.id); }
+      });
+    });
+    changed.forEach(touch);
+    if (changed.size) flushSave();
+  }
 
   // ---- Rendering ----
   function numStats() {
@@ -385,6 +412,21 @@
   const offerSave = (id, ns) => !!(native && native.saveContact) && !isExample && ns.length > 0 && !ns.some(n => phoneNames[n]);
   let savedOffer = false;
 
+  function phoneCopyHtml(c) {
+    const rows = [];
+    const add = (k, v) => { if (v) rows.push(`<div class="pc-row"><span class="pc-k">${esc(k)}</span><span class="pc-v">${v}</span></div>`); };
+    const list = (xs, link) => xs.map(x => `<span>${link ? link(x.value || x) : esc(x.value || x)}${x.label ? ` <small>${esc(x.label)}</small>` : ''}</span>`).join('');
+    add('Name', esc(c.name)); add('Nickname', esc(c.nickname));
+    add('Phone', list(c.phones));
+    add('Email', list(c.emails, e => `<a href="mailto:${esc(e)}">${esc(e)}</a>`));
+    add('Address', list(c.addresses));
+    add('Company', esc([c.title, c.company].filter(Boolean).join(', ')));
+    add('Birthday', esc(c.birthday));
+    add('Website', list(c.websites, w => `<button type="button" class="linkbtn" data-openurl="${esc(w)}">${esc(w)}</button>`));
+    add('Note', esc(c.note));
+    return `<details class="phonecopy" open><summary>From your phone's contacts</summary>${rows.join('')}<p class="hint">Copied ${esc(fullFmt.format(new Date(c.copied)))}. Tof reads this entry and never changes it.</p></details>`;
+  }
+
   function renderPerson(id, msgs) {
     const f = fieldsOf(id), p = people.get(id), ns = numbersOf(id), name = (f.name || '').trim();
     $('record').innerHTML = `
@@ -394,6 +436,7 @@
         <div class="add"><input id="newnum" placeholder="Add a number" aria-label="Add a number" inputmode="tel"${dis()}><button type="button" class="btn" id="addnum"${dis()}>Add number</button></div>
       </div>
       ${offerSave(id, ns) ? `<p class="offer">${name ? esc(name) : 'This contact'} isn't in your phone's contacts. <button type="button" class="btn" id="savephone"${dis()}>Save to phone contacts</button></p>` : ''}
+      ${p.phone ? phoneCopyHtml(p.phone) : ''}
       <div class="group"><span class="lbl">Links</span>
         ${linksOf(id).map((u, i) => `<div class="linkrow"><input data-link="${i}" value="${esc(u)}" aria-label="Link ${i + 1}" inputmode="url"${dis()}><button type="button" class="btn" data-open="${i}">Open</button><button type="button" class="btn" data-copy="${i}">Copy</button><button type="button" class="x" data-unlink="${i}" aria-label="Remove link ${i + 1}"${dis()}>×</button></div>`).join('')}
         <div class="add"><input id="newlink" placeholder="Paste a link" aria-label="New link" inputmode="url"${dis()}><button type="button" class="btn" id="addlink"${dis()}>Add link</button></div>
@@ -573,6 +616,7 @@
     }
     if (!id) return;
     if (d.open != null) { openLink(linksOf(id)[+d.open]); return; }
+    if (d.openurl != null) { openLink(d.openurl); return; }
     if (d.copy != null) { copyLink(normLink(linksOf(id)[+d.copy]), t); return; }
     if (d.unlink != null) { updateField('links', linksOf(id).filter((_, i) => i !== +d.unlink)); renderReader(); return; }
     if (d.usename != null) { updateField('name', d.usename); flushSave(); renderContacts(); renderReader(); return; }

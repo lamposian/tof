@@ -263,25 +263,83 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Reads, never writes, the phone's contacts: a name per number plus everything saved on the matching
+     * contact (numbers, emails, addresses, company, birthday, websites, note) so Tof can keep a copy.
+     */
     private void lookup(String numbersJson) {
-        JSONObject names = new JSONObject();
+        JSONObject names = new JSONObject(), details = new JSONObject();
+        JSONObject byContact = new JSONObject();
         try {
             JSONArray numbers = new JSONArray(numbersJson);
             for (int i = 0; i < numbers.length(); i++) {
                 String number = numbers.getString(i);
                 Uri uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number));
-                try (Cursor c = getContentResolver().query(uri, new String[] { ContactsContract.PhoneLookup.DISPLAY_NAME }, null, null, null)) {
-                    if (c != null && c.moveToFirst() && c.getString(0) != null) names.put(number, c.getString(0));
+                long id = -1;
+                try (Cursor c = getContentResolver().query(uri, new String[] { ContactsContract.PhoneLookup.DISPLAY_NAME, ContactsContract.PhoneLookup._ID }, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        if (c.getString(0) != null) names.put(number, c.getString(0));
+                        id = c.getLong(1);
+                    }
                 } catch (Exception ignored) {
                 }
+                if (id < 0) continue;
+                String key = String.valueOf(id);
+                if (!byContact.has(key)) byContact.put(key, readContact(id));
+                details.put(number, byContact.getJSONObject(key));
             }
         } catch (Exception ignored) {
         }
-        sendContacts(names, "granted");
+        sendContacts(names, "granted", details);
     }
 
-    private void sendContacts(JSONObject names, String state) {
-        String js = "window.__tofContacts && window.__tofContacts(" + names + "," + JSONObject.quote(state) + ")";
+    private JSONObject readContact(long id) {
+        JSONObject out = new JSONObject();
+        JSONArray phones = new JSONArray(), emails = new JSONArray(), addresses = new JSONArray(), sites = new JSONArray();
+        try {
+            out.put("id", id);
+            String[] cols = { ContactsContract.Data.MIMETYPE, ContactsContract.Data.DATA1, ContactsContract.Data.DATA2, ContactsContract.Data.DATA3, ContactsContract.Data.DATA4 };
+            try (Cursor c = getContentResolver().query(ContactsContract.Data.CONTENT_URI, cols, ContactsContract.Data.CONTACT_ID + "=?", new String[] { String.valueOf(id) }, null)) {
+                while (c != null && c.moveToNext()) {
+                    String mime = c.getString(0), d1 = c.getString(1);
+                    if (mime == null || d1 == null || d1.trim().isEmpty()) continue;
+                    int type = c.isNull(2) ? 0 : c.getInt(2);
+                    String custom = c.getString(3);
+                    switch (mime) {
+                        case ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE:
+                            out.put("name", d1); break;
+                        case ContactsContract.CommonDataKinds.Nickname.CONTENT_ITEM_TYPE:
+                            out.put("nickname", d1); break;
+                        case ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE:
+                            phones.put(new JSONObject().put("value", d1).put("label", ContactsContract.CommonDataKinds.Phone.getTypeLabel(getResources(), type, custom).toString())); break;
+                        case ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE:
+                            emails.put(new JSONObject().put("value", d1).put("label", ContactsContract.CommonDataKinds.Email.getTypeLabel(getResources(), type, custom).toString())); break;
+                        case ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_ITEM_TYPE:
+                            addresses.put(new JSONObject().put("value", d1).put("label", ContactsContract.CommonDataKinds.StructuredPostal.getTypeLabel(getResources(), type, custom).toString())); break;
+                        case ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE:
+                            out.put("company", d1);
+                            if (c.getString(4) != null) out.put("title", c.getString(4));
+                            break;
+                        case ContactsContract.CommonDataKinds.Website.CONTENT_ITEM_TYPE:
+                            sites.put(d1); break;
+                        case ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE:
+                            out.put("note", d1); break;
+                        case ContactsContract.CommonDataKinds.Event.CONTENT_ITEM_TYPE:
+                            if (type == ContactsContract.CommonDataKinds.Event.TYPE_BIRTHDAY) out.put("birthday", d1);
+                            break;
+                        default: break;
+                    }
+                }
+            }
+            out.put("phones", phones).put("emails", emails).put("addresses", addresses).put("websites", sites);
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    private void sendContacts(JSONObject names, String state) { sendContacts(names, state, new JSONObject()); }
+    private void sendContacts(JSONObject names, String state, JSONObject details) {
+        String js = "window.__tofContacts && window.__tofContacts(" + names + "," + JSONObject.quote(state) + "," + details + ")";
         web.post(() -> web.evaluateJavascript(js, null));
     }
 
