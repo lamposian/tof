@@ -247,7 +247,7 @@
     $('importtitle').textContent = items.length ? `Imported from TextNow` : 'Nothing imported';
     if (!dlg.open) { if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', ''); }
   }
-  function closeImport() { const dlg = $('importdlg'); imported = null; if (dlg.open) { if (dlg.close) dlg.close(); else dlg.removeAttribute('open'); } }
+  function closeImport() { const dlg = $('importdlg'); imported = null; if (dlg.open) { if (dlg.close) dlg.close(); else dlg.removeAttribute('open'); } askThumbsSoon(); }
   function assignNumber(n, to) {
     setNumber(n, { person: to }); touch(to); flushSave();
     setStatus(`Added ${n} to ${nameOf(to)}.`);
@@ -303,36 +303,63 @@
   // The biggest copy is kept; the others point at it and their files are deleted.
   const ham = (a, b) => { let n = 0; for (let i = 0; i < 16; i++) { let x = parseInt(a[i], 16) ^ parseInt(b[i], 16); while (x) { n += x & 1; x >>= 1; } } return n; };
   const ratio = x => x.w && x.h ? x.w / x.h : 0;
-  const looksSame = (a, b) => !!(a.dhash && b.dhash && ratio(a) && ratio(b) && ham(a.dhash, b.dhash) <= 6 && Math.abs(ratio(a) - ratio(b)) / Math.max(ratio(a), ratio(b)) < 0.08);
+  const looksSame = (a, b) => {
+    if (!a.dhash || !b.dhash || !ratio(a) || !ratio(b)) return false;
+    if (ham(a.dhash, b.dhash) <= 8 && Math.abs(ratio(a) - ratio(b)) / Math.max(ratio(a), ratio(b)) < 0.1) return true;
+    // A square thumbnail cropped from the middle of a bigger picture.
+    const [small, big] = area(a) < area(b) ? [a, b] : [b, a];
+    return Math.abs(ratio(small) - 1) <= 0.05 && !!big.dsq && ham(small.dhash, big.dsq) <= 8;
+  };
   const area = x => (x.w || 0) * (x.h || 0);
+  // Higher resolution wins; at the same resolution the larger file wins.
+  const bigger = (a, b) => area(a) !== area(b) ? area(a) > area(b) : (a.size || 0) >= (b.size || 0);
+  // Close enough that it's probably a thumbnail, not sure enough to delete without asking.
+  const maybeSame = (a, b) => {
+    if (!a.dhash || !b.dhash || !ratio(a) || !ratio(b)) return false;
+    const [small, big] = bigger(a, b) ? [b, a] : [a, b];
+    if (area(small) > area(big) * 0.7) return false;
+    if (ham(a.dhash, b.dhash) <= 16 && Math.abs(ratio(a) - ratio(b)) / Math.max(ratio(a), ratio(b)) < 0.25) return true;
+    return Math.abs(ratio(small) - 1) <= 0.1 && !!big.dsq && ham(small.dhash, big.dsq) <= 16;
+  };
+  const toldApart = (a, b) => (a.notSame || []).includes(b.url) || (b.notSame || []).includes(a.url);
   function dedupe(e) {
     if (!e || e.dupOf || e.status !== 'saved' || (!e.hash && !e.dhash)) return;
-    const o = [...mediaIdx.values()].find(x => x !== e && x.url !== e.url && x.status === 'saved' && !x.dupOf && ((e.hash && x.hash === e.hash) || looksSame(e, x)));
-    if (!o) return;
-    if (area(e) > area(o)) mergeInto(o, e); else mergeInto(e, o);
+    const others = [...mediaIdx.values()].filter(x => x !== e && x.url !== e.url && x.status === 'saved' && !x.dupOf);
+    // Every copy that is certainly the same goes into the biggest one.
+    const same = others.filter(x => (e.hash && x.hash === e.hash) || (!toldApart(e, x) && looksSame(e, x)));
+    if (same.length) {
+      const keep = [e, ...same].reduce((a, b) => bigger(a, b) ? a : b);
+      [e, ...same].filter(x => x !== keep && !x.dupOf).forEach(x => mergeInto(x, keep));
+      if (keep !== e) return;
+    }
+    others.filter(x => !x.dupOf && !toldApart(e, x) && maybeSame(e, x)).forEach(m => {
+      const [small, big] = bigger(e, m) ? [m, e] : [e, m];
+      if (small.askDup) return;
+      small.askDup = big.url; putAll('media', [small]); askThumbsSoon();
+    });
   }
   function mergeInto(drop, keep) {
-    if (native && native.deleteMedia && fileOf(drop) && fileOf(drop) !== fileOf(keep)) native.deleteMedia(fileOf(drop));
+    if (native && native.deleteMedia && fileOf(drop) && fileOf(drop) !== fileOf(keep)) { native.deleteMedia(fileOf(drop)); uncopy(drop); }
     const moved = [...mediaIdx.values()].filter(x => x.dupOf === drop.url);
     moved.forEach(x => { x.dupOf = keep.url; x.local = keep.local; });
     const turns = (drop.turns || 0) % 4;
-    drop.dupOf = keep.url; drop.local = keep.local;
+    drop.dupOf = keep.url; drop.local = keep.local; delete drop.askDup;
     putAll('media', [drop, ...moved]);
     // A thumbnail Bob already turned passes its turn on to the full-size copy.
     if (turns && !keep.turns) setTimeout(() => rotateSaved(keep.url, turns * 90), 0);
     dupTally++; clearTimeout(dupLogT);
     dupLogT = setTimeout(() => { logEvent('media', `Kept one copy of ${fmt.format(dupTally)} duplicate picture${dupTally === 1 ? '' : 's'} or video${dupTally === 1 ? '' : 's'}, the largest`); dupTally = 0; }, 3000);
   }
-  const takeInfo = (e, info) => { e.hash = info.hash || e.hash || ''; if (info.dhash) { e.dhash = info.dhash; e.w = info.w; e.h = info.h; } if (info.hash) e.infoAt = Date.now(); };
+  const takeInfo = (e, info) => { e.hash = info.hash || e.hash || ''; if (info.dhash) { e.dhash = info.dhash; e.dsq = info.dsq; e.w = info.w; e.h = info.h; } if (info.hash) { e.infoAt = Date.now(); e.infoV = info.v || 1; } };
   // Files saved before this check existed are measured once.
   function hashOld() {
     if (!native || !native.hashMedia || isExample) return;
-    const files = [...new Set([...mediaIdx.values()].filter(e => isSavedE(e) && !e.infoAt && !e.dupOf).map(fileOf))];
+    const files = [...new Set([...mediaIdx.values()].filter(e => isSavedE(e) && e.infoV !== 2 && !e.dupOf).map(fileOf))];
     for (let k = 0; k < files.length; k += 100) native.hashMedia(JSON.stringify(files.slice(k, k + 100)));
   }
   window.__tofMediaHash = (file, info) => {
     if (!info || !info.hash) return;
-    const list = [...mediaIdx.values()].filter(e => !e.dupOf && fileOf(e) === file && !e.infoAt);
+    const list = [...mediaIdx.values()].filter(e => !e.dupOf && fileOf(e) === file && e.infoV !== 2);
     list.forEach(e => { takeInfo(e, info); dedupe(e); });
     if (list.length) { putAll('media', list); clearTimeout(rr); rr = setTimeout(refreshMedia, 300); }
   };
@@ -683,7 +710,7 @@
     const out = [], seen = new Set();
     [...msgs].sort((a, b) => b.when - a.when).forEach(m => urlsOf(m).forEach(u => {
       const e = shown(mediaIdx.get(u));
-      if (e && e.status === 'notmedia') return;
+      if (e && (e.status === 'notmedia' || e.hidden)) return;
       const key = e ? e.url : u;
       if (seen.has(key)) return;
       seen.add(key); out.push({ u, m, e: e || {} });
@@ -767,6 +794,59 @@
   pressable($('mediagrid'), () => mediaItems);
   pressable($('allmedia'), () => allItems);
 
+  // ---- Is this a thumbnail of this? ----
+  // Pairs that look alike but not certainly so are asked about once saving settles.
+  let thumbT, thumbQ = [], thumbAt = 0;
+  const busyDlg = () => ['importdlg', 'pickdlg', 'mediadlg', 'linkdlg'].some(id => $(id) && $(id).open);
+  function askThumbsSoon(wait = 4000) { clearTimeout(thumbT); thumbT = setTimeout(askThumbs, wait); }
+  function thumbPairs() {
+    const out = [];
+    mediaIdx.forEach(small => {
+      if (!small.askDup || small.dupOf || small.status !== 'saved') return;
+      const big = mediaIdx.get(small.askDup);
+      if (!big || big.dupOf || big.status !== 'saved' || toldApart(small, big)) { delete small.askDup; putAll('media', [small]); return; }
+      out.push({ small, big });
+    });
+    return out;
+  }
+  function askThumbs() {
+    if (isExample || $('thumbdlg').open) return;
+    if (pendingMedia.size || busyDlg()) return askThumbsSoon();
+    thumbQ = thumbPairs(); thumbAt = 0;
+    if (!thumbQ.length) return;
+    $('thumbfolder').textContent = mediaFolderName ? ', here and in ' + mediaFolderName : '';
+    showThumb();
+    const d = $('thumbdlg'); if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+  }
+  const kb = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+  function whereFrom(u) {
+    const m = messages.find(x => urlsOf(x).includes(u)) || allPickMsgs().find(x => x.media.includes(u));
+    return m ? whoOfM(m) + ' · ' + (m.link ? hostOf(m.link) : dayFmt.format(m.when)) : '';
+  }
+  function showThumb() {
+    const q = thumbQ[thumbAt]; if (!q) return closeThumbs();
+    const side = (e, tag) => `<figure><img src="${esc(e.local)}" alt="${tag}"><figcaption><b>${tag}</b><br>${e.w && e.h ? `${fmt.format(e.w)} × ${fmt.format(e.h)}` : 'Size unknown'}${e.size ? ', ' + kb(e.size) : ''}<br>${esc(whereFrom(e.url))}</figcaption></figure>`;
+    $('thumbpair').innerHTML = side(q.small, 'Smaller') + side(q.big, 'Larger');
+    $('thumbcount').textContent = thumbQ.length > 1 ? `${fmt.format(thumbAt + 1)} of ${fmt.format(thumbQ.length)}` : '';
+  }
+  function closeThumbs() { thumbQ = []; const d = $('thumbdlg'); if (d.close) d.close(); else d.removeAttribute('open'); $('thumbpair').innerHTML = ''; clearTimeout(rr); rr = setTimeout(refreshMedia, 100); }
+  $('thumbyes').addEventListener('click', () => {
+    const q = thumbQ[thumbAt]; if (!q) return;
+    if (q.small.dupOf || q.big.dupOf) { thumbAt++; return showThumb(); }
+    mergeInto(q.small, q.big);
+    // Anything else waiting on the removed one now points at the one kept.
+    thumbQ.forEach(x => { if (x.big === q.small) x.big = q.big; });
+    thumbAt++; showThumb();
+  });
+  $('thumbno').addEventListener('click', () => {
+    const q = thumbQ[thumbAt]; if (!q) return;
+    q.small.notSame = [...(q.small.notSame || []), q.big.url]; delete q.small.askDup;
+    putAll('media', [q.small]);
+    thumbAt++; showThumb();
+  });
+  $('thumblater').addEventListener('click', closeThumbs);
+  $('thumbdlg').addEventListener('cancel', () => { thumbQ = []; });
+
   // ---- Viewer ----
   let viewList = [], viewAt = 0;
   function openMedia(list, n) {
@@ -783,6 +863,7 @@
     $('mediaprev').hidden = $('medianext').hidden = list.length < 2;
     $('mediasave').hidden = !saved || !native || !native.saveMediaAs;
     $('mediarot').hidden = !saved || isVideo(i) || !native || !native.rotateMedia;
+    $('mediadel').hidden = !e.url && !m.link;
     $('mediashow').textContent = m.link ? 'Show the link' : 'Show in conversation';
     const d = $('mediadlg'); if (!d.open) { if (d.showModal) d.showModal(); else d.setAttribute('open', ''); }
   }
@@ -798,6 +879,19 @@
   $('mediadlg').addEventListener('close', () => { $('mediaview').innerHTML = ''; });
   $('mediashow').addEventListener('click', () => jumpTo(viewList[viewAt]));
   $('mediarot').addEventListener('click', () => { const i = viewList[viewAt]; if (i) rotateSaved(i.u, 90); });
+  // Takes a picture out of Media. A picture from a link is dropped from the contact; one from a message stays in the conversation.
+  $('mediadel').addEventListener('click', () => {
+    const i = viewList[viewAt]; if (!i) return;
+    if (!confirm(i.m.link ? 'Remove this picture from the contact?' : 'Remove this from Media? It stays in the conversation.')) return;
+    if (i.m.link) { const p = people.get(i.m.person); if (p) { p.picks = (p.picks || []).filter(x => x.u !== i.u); touch(p.id); flushSave(); } }
+    const e = shown(mediaIdx.get(i.u));
+    if (e && !i.m.link) { e.hidden = true; putAll('media', [e]); }
+    if (e && isSavedE(e)) uncopy(e);
+    logEvent('media', `Removed a picture${i.m.link ? ' from ' + hostOf(i.m.link) : ''} from ${whoOfM(i.m)}'s media`);
+    viewList.splice(viewAt, 1);
+    if (viewList.length) openMedia(viewList, Math.min(viewAt, viewList.length - 1)); else closeMedia();
+    refreshMedia();
+  });
   $('mediasave').addEventListener('click', () => {
     const i = viewList[viewAt]; if (!i || !isSavedE(i.e)) return;
     native.saveMediaAs(fileOf(i.e), exportName(i), i.e.mime || '');
@@ -839,6 +933,13 @@
     const d = i.m.when, ext = fileOf(i.e).split('.').pop();
     const who = whoOfM(i.m).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}${pad(d.getMinutes())} ${who}${i.m.you ? ' (you)' : ''} ${tokenOf(i.e)}.${ext}`;
+  }
+  // Takes a removed picture's copy back out of the media folder.
+  function uncopy(e) {
+    const t = fileOf(e).split('.')[0].slice(0, 10);
+    if (!t || !mediaFolderName || !native || !native.uncopyMedia) return;
+    [...copiedTokens].filter(x => x.startsWith(t)).forEach(x => copiedTokens.delete(x));
+    native.uncopyMedia(JSON.stringify([t]));
   }
   let copyT;
   function copyToFolder() {
@@ -1585,7 +1686,7 @@
     ready();
     readNotify(); syncTimers(); renderTimers();
     saveMediaFor([...messages, ...allPickMsgs()]);
-    hashOld();
+    hashOld(); askThumbsSoon(6000);
     snapLinks();
     copyToFolder();
     lookupContacts(false);

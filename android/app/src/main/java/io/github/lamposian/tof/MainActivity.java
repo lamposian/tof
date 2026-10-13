@@ -445,6 +445,10 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void copyMedia(String itemsJson) { mediaIo.execute(() -> copyAll(itemsJson)); }
 
+        /** Deletes media folder copies whose names contain any of the given tokens (a removed thumbnail's copy). */
+        @JavascriptInterface
+        public void uncopyMedia(String tokensJson) { mediaIo.execute(() -> uncopyAll(tokensJson)); }
+
         /** Lets the person pick where to save one saved file (Android's save dialog). */
         @JavascriptInterface
         public void saveMediaAs(String file, String name, String mime) {
@@ -763,6 +767,28 @@ public class MainActivity extends Activity {
         web.post(() -> web.evaluateJavascript(js, null));
     }
 
+    private void uncopyAll(String tokensJson) {
+        Uri tree = mediaTree();
+        if (tree == null) return;
+        try {
+            JSONArray tokens = new JSONArray(tokensJson);
+            String parent = DocumentsContract.getTreeDocumentId(tree);
+            String[] cols = { DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_DOCUMENT_ID };
+            try (Cursor c = getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent), cols, null, null, null)) {
+                while (c != null && c.moveToNext()) {
+                    String name = c.getString(0);
+                    if (name == null) continue;
+                    for (int i = 0; i < tokens.length(); i++) {
+                        String t = tokens.optString(i);
+                        if (t.length() < 6 || !name.contains(t)) continue;
+                        try { DocumentsContract.deleteDocument(getContentResolver(), DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(1))); } catch (Exception ignored) { }
+                        break;
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+    }
+
     private String folderName(Uri tree) {
         String id = DocumentsContract.getTreeDocumentId(tree);
         int colon = id.indexOf(':');
@@ -1077,14 +1103,18 @@ public class MainActivity extends Activity {
         try {
             o.put("hash", fileHash(f));
             int[] wh = new int[2];
-            String d = dHash(f, wh);
-            if (d != null) o.put("dhash", d).put("w", wh[0]).put("h", wh[1]);
+            String d = dHash(f, wh, false);
+            if (d != null) o.put("dhash", d).put("dsq", dHash(f, new int[2], true)).put("w", wh[0]).put("h", wh[1]);
+            o.put("v", 2);
         } catch (Exception ignored) { }
         return o;
     }
 
-    /** 64-bit difference hash: shrink to 9x8 grey, compare each pixel with its right neighbour. */
-    private static String dHash(File f, int[] size) {
+    /**
+     * 64-bit difference hash: shrink to 9x8 grey, compare each pixel with its right neighbour. With `square`,
+     * of the centre square only, because thumbnails are often a square crop of the full picture.
+     */
+    private static String dHash(File f, int[] size, boolean square) {
         try {
             android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
             o.inJustDecodeBounds = true;
@@ -1098,6 +1128,11 @@ public class MainActivity extends Activity {
             d.inSampleSize = sample;
             android.graphics.Bitmap b = android.graphics.BitmapFactory.decodeFile(f.getPath(), d);
             if (b == null) return null;
+            if (square && b.getWidth() != b.getHeight()) {
+                int side = Math.min(b.getWidth(), b.getHeight());
+                android.graphics.Bitmap c = android.graphics.Bitmap.createBitmap(b, (b.getWidth() - side) / 2, (b.getHeight() - side) / 2, side, side);
+                if (c != b) { b.recycle(); b = c; }
+            }
             android.graphics.Bitmap s = android.graphics.Bitmap.createScaledBitmap(b, 9, 8, true);
             long bits = 0;
             for (int y = 0; y < 8; y++) {
@@ -1116,6 +1151,15 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static boolean samePicture(String da, String sa, int[] a, String db, String sb, int[] b) {
+        double ra = (double) a[0] / a[1], rb = (double) b[0] / b[1];
+        if (hamming(da, db) <= 8 && Math.abs(ra - rb) / Math.max(ra, rb) < 0.1) return true;
+        boolean aSmall = (long) a[0] * a[1] < (long) b[0] * b[1];
+        double rs = aSmall ? ra : rb;
+        if (Math.abs(rs - 1) > 0.05) return false;
+        return aSmall ? sb != null && hamming(da, sb) <= 8 : sa != null && hamming(db, sa) <= 8;
+    }
+
     private static int hamming(String a, String b) { return Long.bitCount(Long.parseUnsignedLong(a, 16) ^ Long.parseUnsignedLong(b, 16)); }
 
     /**
@@ -1126,8 +1170,9 @@ public class MainActivity extends Activity {
         JSONArray out = new JSONArray();
         try {
             JSONArray in = new JSONArray(imagesJson);
-            List<String> urls = new ArrayList<>(), hashes = new ArrayList<>();
+            List<String> urls = new ArrayList<>(), hashes = new ArrayList<>(), squares = new ArrayList<>();
             List<int[]> sizes = new ArrayList<>();
+            List<Long> lengths = new ArrayList<>();
             for (int i = 0; i < in.length() && i < 120; i++) {
                 String u = in.getString(i);
                 File tmp = new File(pagesDir, "cand-" + System.nanoTime() + ".tmp");
@@ -1146,17 +1191,21 @@ public class MainActivity extends Activity {
                         while ((n = is.read(buf)) > 0) { total += n; if (total > 30L * 1024 * 1024) throw new Exception("too large"); os.write(buf, 0, n); }
                     }
                     int[] wh = new int[2];
-                    String d = dHash(tmp, wh);
+                    String d = dHash(tmp, wh, false);
                     if (d == null || wh[0] < 120 || wh[1] < 120) continue;
-                    // Same look and shape: keep whichever is bigger.
+                    String sq = dHash(tmp, new int[2], true);
+                    // Same picture at another size or as a square crop: keep whichever is bigger.
                     int match = -1;
                     for (int k = 0; k < hashes.size(); k++) {
-                        int[] o = sizes.get(k);
-                        double ra = (double) wh[0] / wh[1], rb = (double) o[0] / o[1];
-                        if (hamming(d, hashes.get(k)) <= 6 && Math.abs(ra - rb) / Math.max(ra, rb) < 0.08) { match = k; break; }
+                        if (samePicture(d, sq, wh, hashes.get(k), squares.get(k), sizes.get(k))) { match = k; break; }
                     }
-                    if (match < 0) { urls.add(u); hashes.add(d); sizes.add(wh); }
-                    else if ((long) wh[0] * wh[1] > (long) sizes.get(match)[0] * sizes.get(match)[1]) { urls.set(match, u); hashes.set(match, d); sizes.set(match, wh); }
+                    long len = tmp.length();
+                    if (match < 0) { urls.add(u); hashes.add(d); squares.add(sq); sizes.add(wh); lengths.add(len); }
+                    else {
+                        // Higher resolution wins; at the same resolution the larger file wins.
+                        long area = (long) wh[0] * wh[1], had = (long) sizes.get(match)[0] * sizes.get(match)[1];
+                        if (area > had || (area == had && len > lengths.get(match))) { urls.set(match, u); hashes.set(match, d); squares.set(match, sq); sizes.set(match, wh); lengths.set(match, len); }
+                    }
                 } catch (Exception ignored) {
                 } finally {
                     if (c != null) c.disconnect();

@@ -206,6 +206,12 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .pcheck { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 11px; background: var(--you); color: #fff; font-size: 0.8rem; display: flex; align-items: center; justify-content: center; }
 .prot { font: inherit; font-size: 0.8rem; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); cursor: pointer; }
 .pickdlg .dlgfoot { gap: 8px; }
+.thumbpair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
+.thumbpair figure { margin: 0; display: grid; gap: 6px; align-content: start; }
+.thumbpair img { width: 100%; max-height: 40vh; object-fit: contain; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+.thumbpair figcaption { font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.thumbdlg .dlgfoot { gap: 8px; flex-wrap: wrap; }
+#thumbcount { font-family: var(--mono); }
 .pickbar { margin-top: 10px; }
 .pickbar + .pickgrid { margin-top: 8px; }
 .linkdlg:not([open]) { display: none; }
@@ -440,7 +446,14 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   <div class="mediatop"><span id="mediacount"></span><button type="button" class="btn" id="mediaclose">Close</button></div>
   <div class="mediastage"><button type="button" class="mstep" id="mediaprev" aria-label="Previous">‹</button><div id="mediaview"></div><button type="button" class="mstep" id="medianext" aria-label="Next">›</button></div>
   <p class="impline" id="mediacap"></p>
-  <div class="dlgfoot"><button type="button" class="btn" id="mediarot" hidden aria-label="Rotate 90 degrees">↻ Rotate</button><button type="button" class="btn" id="mediasave" hidden>Save a copy</button><button type="button" class="btn solid" id="mediashow">Show in conversation</button></div>
+  <div class="dlgfoot"><button type="button" class="btn" id="mediarot" hidden aria-label="Rotate 90 degrees">↻ Rotate</button><button type="button" class="btn" id="mediadel" hidden>Remove</button><button type="button" class="btn" id="mediasave" hidden>Save a copy</button><button type="button" class="btn solid" id="mediashow">Show in conversation</button></div>
+</dialog>
+
+<dialog class="dlg thumbdlg" id="thumbdlg" aria-labelledby="thumbtitle">
+  <h2 id="thumbtitle">Is this a thumbnail of this?</h2>
+  <p class="impline">These look like the same picture at two sizes. If they are, Tof keeps the larger one and deletes the smaller one<span id="thumbfolder"></span>. <span id="thumbcount"></span></p>
+  <div class="thumbpair" id="thumbpair"></div>
+  <div class="dlgfoot"><button type="button" class="btn" id="thumblater">Not now</button><button type="button" class="btn" id="thumbno">Keep both</button><button type="button" class="btn solid" id="thumbyes">Remove smaller</button></div>
 </dialog>
 
 <dialog class="dlg pickdlg" id="pickdlg" aria-labelledby="picktitle">
