@@ -1,6 +1,7 @@
 (function () {
   // Format seen in TextNow Android exports:
   // <html>2026-10-13 07:51 UTC - You: <br/> text<br/><br/>2026-10-13 07:51 UTC - +14752015569: <br/> text</html>
+  // Despite the "UTC" label, the times are the phone's local time, so they're read as local.
   const HEAD = /(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2})(?::(\d{2}))? UTC - (.+?):\s*<br\s*\/?>/g;
   const URL_RE = /https?:\/\/[^\s<>"']+/gi;
   const decoder = new DOMParser();
@@ -31,7 +32,8 @@
       const start = m.index + m[0].length;
       const end = i + 1 < heads.length ? heads[i + 1].index : body.length;
       const sender = toText(m[5]);
-      const when = new Date(`${m[1]}T${m[2]}:${m[3]}:${m[4] || '00'}Z`);
+      const [y, mo, d] = m[1].split('-').map(Number);
+      const when = new Date(y, mo - 1, d, +m[2], +m[3], +(m[4] || 0));
       const seg = body.slice(start, end);
       msgs.push({ when, you: /^you$/i.test(sender), sender, text: toText(seg), media: mediaOf(seg) });
     });
@@ -448,6 +450,7 @@
     }
     clearArmed = 0; btn.textContent = 'Clear all';
     await clearAll();
+    await putAll('meta', [{ id: 'localtime', at: Date.now() }]);
     if (native) { try { native.clearMedia(); } catch (e) {} }
     messages = []; records.clear(); fieldDefs = []; mediaIdx.clear(); isExample = false; selected = null;
     setStatus('Deleted all conversations, records and saved media.');
@@ -469,6 +472,13 @@
     if (db && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     const [stored, recs, media, meta] = await Promise.all([getAll('messages'), getAll('records'), getAll('media'), getAll('meta')]);
     messages = stored.map(fromStored);
+    // Messages imported before the time fix were read as UTC; re-read their clock times as local.
+    if (messages.length && !meta.some(m => m.id === 'localtime')) {
+      messages.forEach(m => { const u = m.when; m.when = new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), u.getUTCHours(), u.getUTCMinutes(), u.getUTCSeconds()); m.k = key(m); });
+      await new Promise(res => { if (!db) return res(); const t = db.transaction('messages', 'readwrite'); t.objectStore('messages').clear(); t.oncomplete = res; t.onerror = res; });
+      await putAll('messages', messages.map(toStored));
+    }
+    await putAll('meta', [{ id: 'localtime', at: Date.now() }]);
     recs.forEach(r => records.set(r.contact, r));
     media.forEach(m => mediaIdx.set(m.url, m));
     const f = meta.find(m => m.id === 'fields'); if (f) fieldDefs = f.list || [];
