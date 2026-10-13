@@ -206,6 +206,8 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .pcheck { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 11px; background: var(--you); color: #fff; font-size: 0.8rem; display: flex; align-items: center; justify-content: center; }
 .prot { font: inherit; font-size: 0.8rem; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); cursor: pointer; }
 .pickdlg .dlgfoot { gap: 8px; }
+.pickbar { margin-top: 10px; }
+.pickbar + .pickgrid { margin-top: 8px; }
 .linkdlg:not([open]) { display: none; }
 .linkdlg h2 { margin: 0; }
 .linkurls { margin: 0; padding: 8px 10px 8px 26px; background: var(--bg); border-radius: 8px; font-family: var(--mono); font-size: 0.8rem; overflow-wrap: anywhere; }
@@ -444,6 +446,7 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
 <dialog class="dlg pickdlg" id="pickdlg" aria-labelledby="picktitle">
   <h2 id="picktitle">Pictures from the page</h2>
   <p class="impline">Tap the ones to keep in this contact's Media. ↻ turns a picture 90° before it's saved.</p>
+  <div class="pickbar"><button type="button" class="btn" id="pickall" hidden>Select all</button></div>
   <div class="pickgrid" id="pickgrid"></div>
   <div class="dlgfoot"><button type="button" class="btn" id="pickcancel">Cancel</button><button type="button" class="btn solid" id="pickadd" disabled>Add to Media</button></div>
 </dialog>

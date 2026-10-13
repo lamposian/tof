@@ -1131,7 +1131,9 @@
     $('pickgrid').innerHTML = s.items.map((i, n) => `<div class="ptile${i.on ? ' on' : ''}${i.have ? ' have' : ''}">
       <button type="button" class="pimg" data-pt="${n}" aria-pressed="${i.on || i.have}"${i.have ? ' disabled' : ''} aria-label="${i.have ? 'Already in Media' : 'Picture ' + (n + 1)}"><img src="${esc(i.u)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="transform: rotate(${i.rot}deg)">${i.have ? '<span class="mbadge">In Media</span>' : i.on ? '<span class="pcheck" aria-hidden="true">✓</span>' : ''}</button>
       ${i.have ? '' : `<button type="button" class="prot" data-prot="${n}" aria-label="Rotate picture ${n + 1}">↻ ${i.rot ? i.rot + '°' : ''}</button>`}</div>`).join('') || '<p class="impline">No pictures found on this page.</p>';
-    const k = s.items.filter(i => i.on).length;
+    const k = s.items.filter(i => i.on).length, open = s.items.filter(i => !i.have);
+    $('pickall').hidden = !open.length;
+    $('pickall').textContent = open.length && open.every(i => i.on) ? 'Select none' : `Select all (${open.length})`;
     $('pickadd').textContent = k ? `Add ${k} to Media` : 'Add to Media';
     $('pickadd').disabled = !k;
   }
@@ -1144,6 +1146,12 @@
   });
   const closePicks = () => { pickState = null; const d = $('pickdlg'); if (d.close) d.close(); else d.removeAttribute('open'); };
   $('pickcancel').addEventListener('click', closePicks);
+  $('pickall').addEventListener('click', () => {
+    const s = pickState; if (!s) return;
+    const open = s.items.filter(i => !i.have), on = !open.every(i => i.on);
+    open.forEach(i => { i.on = on; });
+    renderPicks();
+  });
   $('pickdlg').addEventListener('cancel', () => { pickState = null; });
   $('pickadd').addEventListener('click', () => {
     const s = pickState, p = s && people.get(s.id); if (!p) return;
