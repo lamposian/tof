@@ -43,11 +43,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk tof.apk
-          gh release delete android --yes --cleanup-tag || true
-          gh release create android tof.apk \
-            --title "Tof for Android" \
-            --notes "Latest build of Tof from ${GITHUB_SHA::7}. Download tof.apk on your phone and open it to install." \
-            --target "$GITHUB_SHA"
+          notes="Latest build of Tof from ${GITHUB_SHA::7}. Download tof.apk on your phone and open it to install."
+          if gh release view android >/dev/null 2>&1; then
+            gh release upload android tof.apk --clobber
+            gh release edit android --notes "$notes"
+          else
+            gh release create android tof.apk --title "Tof for Android" --notes "$notes" --target "$GITHUB_SHA"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

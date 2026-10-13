@@ -156,6 +156,8 @@
   window.__tofMediaDone = (url, status, local, mime, size) => {
     pendingMedia.delete(url);
     const prev = mediaIdx.get(url) || {};
+    // A copy already on the phone always wins over a later failed or expired check.
+    if (prev.status === 'saved' && status !== 'saved') { clearTimeout(rr); rr = setTimeout(renderReader, 300); return; }
     const e = { url, status, local: local || '', mime: mime || '', size: size || 0, tries: (prev.tries || 0) + (status === 'failed' ? 1 : 0), savedAt: Date.now() };
     mediaIdx.set(url, e);
     putAll('media', [e]);
