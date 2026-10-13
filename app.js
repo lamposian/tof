@@ -581,7 +581,7 @@
     $('record').innerHTML = `
       <label for="f-name">Name<input id="f-name" data-f="name" value="${esc(f.name || '')}" placeholder="Contact name"${dis()}></label>
       <div class="group"><span class="lbl">Numbers</span>
-        ${ns.map(n => `<div class="numrow"><span class="n">${esc(n)}</span><input data-label="${esc(n)}" value="${esc(num(n).label || '')}" placeholder="Label, like work" aria-label="Label for ${esc(n)}"${dis()}><button type="button" class="x" data-detach="${esc(n)}" aria-label="Remove ${esc(n)} from this contact"${dis()}>×</button></div>${phoneNames[n] && phoneNames[n].toLowerCase() !== name.toLowerCase() ? `<small class="hint">Phone contacts: ${esc(phoneNames[n])}${name ? '' : ` <button type="button" class="chip goto" data-usename="${esc(phoneNames[n])}"${dis()}>Use this name</button>`}</small>` : ''}`).join('')}
+        ${ns.map(n => `<div class="numrow"><span class="n">${esc(n)}</span><input data-label="${esc(n)}" value="${esc(num(n).label || '')}" placeholder="Label, like work" aria-label="Label for ${esc(n)}"${dis()}>${native && native.textVia ? `<button type="button" class="btn" data-text="${esc(n)}" aria-label="Text ${esc(n)} in TextNow">Text</button>` : ''}<button type="button" class="x" data-detach="${esc(n)}" aria-label="Remove ${esc(n)} from this contact"${dis()}>×</button></div>${phoneNames[n] && phoneNames[n].toLowerCase() !== name.toLowerCase() ? `<small class="hint">Phone contacts: ${esc(phoneNames[n])}${name ? '' : ` <button type="button" class="chip goto" data-usename="${esc(phoneNames[n])}"${dis()}>Use this name</button>`}</small>` : ''}`).join('')}
         <div class="add"><input id="newnum" placeholder="Add a number" aria-label="Add a number" inputmode="tel"${dis()}><button type="button" class="btn" id="addnum"${dis()}>Add number</button></div>
       </div>
       ${offerSave(id, ns) ? `<p class="offer">${name ? esc(name) : 'This contact'} isn't in your phone's contacts. <button type="button" class="btn" id="savephone"${dis()}>Save to phone contacts</button></p>` : ''}
@@ -1295,6 +1295,13 @@
     if (d.open != null) { logEvent('link', `Opened ${normLink(linksOf(id)[+d.open])} for ${nameOf(id)}`); openLink(linksOf(id)[+d.open]); return; }
     if (d.openurl != null) { logEvent('link', `Opened ${normLink(d.openurl)} for ${nameOf(id)}`); openLink(d.openurl); return; }
     if (d.copy != null) { copyLink(normLink(linksOf(id)[+d.copy]), t); return; }
+    if (d.text != null) {
+      const how = native.textVia(d.text);
+      if (how === 'none') { setStatus('No texting app found to open.', true); return; }
+      if (how === 'other') setStatus("TextNow isn't installed, so your usual texting app opened.");
+      logEvent('contact', `Started a text to ${nameOf(id)} (${d.text}) in ${how === 'textnow' ? 'TextNow' : 'the texting app'}`);
+      return;
+    }
     if (d.snapopen != null) { const e = pages[d.snapopen]; if (e && e.file) { logEvent('link', `Opened the saved copy of ${d.snapopen}`); native.openSaved(e.file, e.mime); } return; }
     if (d.snapagain != null) { snapAgain(d.snapagain); return; }
     if (d.picks != null) { openPicks(id, d.picks); return; }

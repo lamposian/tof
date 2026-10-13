@@ -559,6 +559,21 @@ public class MainActivity extends Activity {
             if (file != null && !file.contains("/")) new File(mediaDir, file).delete();
         }
 
+        /**
+         * Opens TextNow on a new message to `number`; Bob writes and sends it there. Falls back to the
+         * phone's default texting app. Returns "textnow", "other" or "none".
+         */
+        @JavascriptInterface
+        public String textVia(String number) {
+            if (number == null || !number.matches("[+0-9 ()-]{3,20}")) return "none";
+            Uri to = Uri.parse("smsto:" + number.replaceAll("[^+0-9]", ""));
+            for (String pkg : new String[] { "com.enflick.android.TextNow", "com.enflick.android.tn2ndLine" }) {
+                Intent i = new Intent(Intent.ACTION_SENDTO, to).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try { startActivity(i); return "textnow"; } catch (ActivityNotFoundException ignored) { }
+            }
+            try { startActivity(new Intent(Intent.ACTION_SENDTO, to).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return "other"; } catch (ActivityNotFoundException e) { return "none"; }
+        }
+
         @JavascriptInterface
         public void deleteSaved(String file) {
             if (file != null && !file.contains("/")) new File(pagesDir, file).delete();
