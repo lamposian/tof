@@ -221,6 +221,23 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** Opens the phone's Contacts app with a new contact filled in; the person reviews it and taps Save. */
+        @JavascriptInterface
+        public void saveContact(String name, String numbersJson) {
+            runOnUiThread(() -> {
+                Intent i = new Intent(ContactsContract.Intents.Insert.ACTION);
+                i.setType(ContactsContract.RawContacts.CONTENT_TYPE);
+                if (name != null && !name.isEmpty()) i.putExtra(ContactsContract.Intents.Insert.NAME, name);
+                String[] keys = { ContactsContract.Intents.Insert.PHONE, ContactsContract.Intents.Insert.SECONDARY_PHONE, ContactsContract.Intents.Insert.TERTIARY_PHONE };
+                try {
+                    JSONArray nums = new JSONArray(numbersJson == null ? "[]" : numbersJson);
+                    for (int k = 0; k < nums.length() && k < keys.length; k++) i.putExtra(keys[k], nums.getString(k));
+                } catch (Exception ignored) { }
+                i.putExtra("finishActivityOnSaveCompleted", true);
+                try { startActivity(i); } catch (ActivityNotFoundException ignored) { }
+            });
+        }
+
         @JavascriptInterface
         public void clearMedia() {
             File[] files = mediaDir.listFiles();

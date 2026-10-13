@@ -71,7 +71,19 @@ td .who small { color: var(--muted); font-family: var(--mono); font-size: 0.75re
 .record .meta { font-size: 0.78rem; color: var(--muted); margin: 0; }
 .record .hint { font-size: 0.78rem; color: var(--muted); margin: -4px 0 0; }
 .record .goto { border: 0; cursor: pointer; font: inherit; font-size: 0.75rem; }
-.record .links { display: grid; gap: 6px; }
+.record .group { display: grid; gap: 6px; }
+.record .numrow { display: flex; gap: 6px; align-items: center; }
+.record .numrow .n { font-family: var(--mono); font-size: 0.85rem; flex: 0 0 auto; }
+.record .numrow input { flex: 1; min-width: 0; }
+.record select { font: inherit; font-size: 0.95rem; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; flex: 1; min-width: 140px; }
+.record .hint b { color: var(--fg); }
+.record .offer { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--you-soft); font-size: 0.85rem; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.btn.quiet { border-color: var(--line); color: var(--muted); }
+.btn:disabled { opacity: .5; cursor: default; }
+.cardhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.only { margin: 4px 0 10px; gap: 6px; }
+.only .pick { border: 1px solid var(--line); background: var(--panel); cursor: pointer; font: inherit; font-size: 0.8rem; padding: 3px 10px; }
+.only .pick.on { background: var(--you); color: var(--panel); border-color: var(--you); }
 .record .lbl { font-size: 0.78rem; color: var(--muted); }
 .record .linkrow { display: flex; gap: 6px; }
 .record .linkrow input { flex: 1; min-width: 0; }
@@ -144,7 +156,7 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   <p class="example" id="example" hidden><span class="badge">Example data</span> <span class="privacy">Add your exports in Settings to replace it.</span></p>
 
   <nav class="tabs" role="tablist" aria-label="Views">
-    <button type="button" role="tab" id="tab-convos" aria-controls="view-convos" aria-selected="true">Conversations</button>
+    <button type="button" role="tab" id="tab-convos" aria-controls="view-convos" aria-selected="true">Contacts</button>
     <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false">Stats</button>
     <button type="button" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false">Settings</button>
   </nav>
@@ -154,10 +166,10 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
   <div class="view" id="view-convos" role="tabpanel" aria-labelledby="tab-convos">
   <section class="grid">
     <div class="card">
-      <h2>Conversations</h2>
+      <div class="cardhead"><h2>Contacts</h2><button type="button" class="btn" id="newperson">New contact</button></div>
       <p class="sub">Pick one to open its record and messages.</p>
-      <button type="button" class="btn" id="usecontacts" hidden>Show names from my contacts</button>
-      <input type="search" id="search" class="search" placeholder="Search names, numbers, tags, notes" aria-label="Search conversations">
+      <button type="button" class="btn" id="usecontacts" hidden>Suggest names from my phone contacts</button>
+      <input type="search" id="search" class="search" placeholder="Search names, numbers, tags, notes" aria-label="Search contacts">
       <div class="tablewrap">
         <table>
           <thead><tr><th>Contact</th><th>Messages</th><th>Last message</th></tr></thead>
@@ -166,11 +178,11 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
       </div>
     </div>
     <div class="card">
-      <h2 id="readertitle">Conversation</h2>
-      <p class="sub" id="readersub">Select a conversation.</p>
+      <h2 id="readertitle">Contact</h2>
+      <p class="sub" id="readersub">Select a contact.</p>
       <form class="record" id="record" autocomplete="off" hidden></form>
       <details class="cstats" id="cstats" open hidden>
-        <summary>Stats for this conversation</summary>
+        <summary>Stats for this contact</summary>
         <div class="stats mini" id="cstats-tiles"></div>
         <h3>Messages per day</h3>
         <p class="sub" id="cdaysub"></p>
@@ -178,6 +190,7 @@ tbody tr:hover, tbody tr.sel { background: var(--you-soft); }
         <h3>When you text</h3>
         <div class="chart" id="chours"></div>
       </details>
+      <div class="chips only" id="only" role="group" aria-label="Show messages from" hidden></div>
       <div class="reader" id="reader"></div>
     </div>
   </section>

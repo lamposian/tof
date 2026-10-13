@@ -62,17 +62,16 @@
   }
 
   // ---- Storage (IndexedDB, kept in the app's own data on the phone) ----
+  // people: contact records. records: one entry per phone number, pointing at its contact.
+  const STORES = ['messages', 'records', 'media', 'meta', 'people'];
   let db = null;
   function openDb() {
     return new Promise(res => {
       try {
-        const r = indexedDB.open('tof', 1);
+        const r = indexedDB.open('tof', 2);
         r.onupgradeneeded = () => {
-          const d = r.result;
-          d.createObjectStore('messages', { keyPath: 'k' });
-          d.createObjectStore('records', { keyPath: 'contact' });
-          d.createObjectStore('media', { keyPath: 'url' });
-          d.createObjectStore('meta', { keyPath: 'id' });
+          const d = r.result, make = (n, k) => { if (!d.objectStoreNames.contains(n)) d.createObjectStore(n, { keyPath: k }); };
+          make('messages', 'k'); make('records', 'contact'); make('media', 'url'); make('meta', 'id'); make('people', 'id');
         };
         r.onsuccess = () => res(r.result);
         r.onerror = () => res(null);
@@ -85,25 +84,33 @@
     q.onsuccess = () => res(q.result || []); q.onerror = () => res([]);
   });
   const putAll = (store, items) => new Promise(res => {
-    if (!db || !items.length) return res();
+    if (!db || isExample || !items.length) return res();
     const t = db.transaction(store, 'readwrite'); const s = t.objectStore(store);
     items.forEach(i => s.put(i));
     t.oncomplete = () => res(); t.onerror = () => { console.error(t.error); res(); };
   });
+  const delOne = (store, k) => new Promise(res => {
+    if (!db || isExample) return res();
+    const t = db.transaction(store, 'readwrite'); t.objectStore(store).delete(k);
+    t.oncomplete = () => res(); t.onerror = () => res();
+  });
   const clearAll = () => new Promise(res => {
     if (!db) return res();
-    const t = db.transaction(['messages', 'records', 'media', 'meta'], 'readwrite');
-    ['messages', 'records', 'media', 'meta'].forEach(n => t.objectStore(n).clear());
+    const t = db.transaction(STORES, 'readwrite');
+    STORES.forEach(n => t.objectStore(n).clear());
     t.oncomplete = () => res(); t.onerror = () => res();
   });
   const toStored = m => ({ k: m.k, contact: m.contact, when: m.when.getTime(), you: m.you, sender: m.sender, text: m.text, media: m.media || [] });
   const fromStored = m => ({ ...m, when: new Date(m.when) });
 
   // ---- State ----
-  let messages = [], isExample = false, selected = null, query = '';
-  const records = new Map();   // contact -> {contact, fields: {name, tags, notes, ...custom}, updated}
-  let fieldDefs = [];          // custom fields shared by all records: [{id, label}]
-  const mediaIdx = new Map();  // url -> {url, status: saved|notmedia|failed, local, mime, size, tries}
+  let messages = [], isExample = false, query = '';
+  let sel = null;              // 'p:<contact id>' for a contact, 'n:<number>' for a number not yet given a contact
+  let only = '';               // number the open contact's messages are narrowed to, '' for all
+  const people = new Map();    // id -> {id, fields: {name, links, tags, notes, ...custom}, created, updated}
+  const numbers = new Map();   // number -> {contact: number, person: id or null, label, updated}
+  let fieldDefs = [];          // custom fields shared by all contacts: [{id, label}]
+  const mediaIdx = new Map();  // url -> {url, status: saved|notmedia|failed|gone, local, mime, size, tries}
   const pendingMedia = new Set();
 
   const $ = id => document.getElementById(id);
@@ -112,11 +119,28 @@
   const fullFmt = new Intl.DateTimeFormat('en', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   const localDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const rec = c => records.get(c) || { contact: c, fields: {} };
-  const phoneNames = {};       // number -> name saved in the phone's contacts
-  let contactsState = '';       // granted | denied | not-asked
-  const displayName = c => (rec(c).fields.name || '').trim() || phoneNames[c] || c;
-  const tagsOf = c => (rec(c).fields.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+  const phoneNames = {};       // number -> name saved in the phone's contacts (only ever a suggestion)
+  let contactsState = '';      // granted | denied | not-asked
+  const newId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+  const num = n => numbers.get(n) || { contact: n, person: null, label: '' };
+  const personOf = n => { const id = num(n).person; return id && people.has(id) ? id : null; };
+  const numbersOf = id => [...numbers.values()].filter(r => r.person === id).map(r => r.contact);
+  const fieldsOf = id => (people.get(id) || {}).fields || {};
+  const nameOf = id => (fieldsOf(id).name || '').trim() || numbersOf(id)[0] || 'Unnamed contact';
+  const tagsOf = id => (fieldsOf(id).tags || '').split(',').map(t => t.trim()).filter(Boolean);
+  const linksOf = id => fieldsOf(id).links || [];
+  const openId = () => sel && sel.startsWith('p:') ? sel.slice(2) : null;
+  const numLabel = n => num(n).label ? `${n} (${num(n).label})` : n;
+  // Numbers typed by hand are matched to TextNow's +1XXXXXXXXXX form.
+  function normNumber(s) {
+    const t = (s || '').trim(), d = t.replace(/\D/g, '');
+    if (!d) return '';
+    if (t.startsWith('+')) return '+' + d;
+    if (d.length === 10) return '+1' + d;
+    if (d.length === 11 && d[0] === '1') return '+' + d;
+    return d;
+  }
 
   function setStatus(text, warn) { const s = $('status'); s.textContent = text; s.classList.toggle('warn', !!warn); }
 
@@ -129,15 +153,18 @@
       } catch (e) { failed.push(f.name); }
     }
     const fresh = [];
+    let ask = '';
     if (added.length) {
-      if (isExample) { messages = []; isExample = false; selected = null; }
+      if (isExample) { messages = []; people.clear(); numbers.clear(); isExample = false; sel = null; }
       const seen = new Set(messages.map(m => m.k));
       added.forEach(m => { if (!seen.has(m.k)) { seen.add(m.k); messages.push(m); fresh.push(m); } });
       await putAll('messages', fresh.map(toStored));
-      selected = added[added.length - 1].contact;
+      const n = added[added.length - 1].contact, id = personOf(n);
+      flushSave();
+      if (id) { sel = 'p:' + id; only = ''; } else { sel = 'n:' + n; ask = ` ${n} is a new number: choose its contact below.`; }
     }
     const parts = [];
-    if (added.length) parts.push(`Read ${fmt.format(added.length)} messages from ${files.length - failed.length} file${files.length - failed.length === 1 ? '' : 's'} (${fmt.format(fresh.length)} new).`);
+    if (added.length) parts.push(`Read ${fmt.format(added.length)} messages from ${files.length - failed.length} file${files.length - failed.length === 1 ? '' : 's'} (${fmt.format(fresh.length)} new).${ask}`);
     if (failed.length) parts.push(`No TextNow messages found in ${failed.join(', ')}. Check it's an exported conversation file.`);
     setStatus(parts.join(' '), failed.length > 0);
     showTab('convos');
@@ -184,37 +211,49 @@
     const pics = urlsOf(m).map(mediaHtml).join('');
     return (pics ? `<div class="pics">${pics}</div>` : '') + words;
   }
-
-  // ---- Names from the phone's contacts (Android app only) ----
+  // ---- Names from the phone's contacts (Android app only). They are offered as suggestions, never applied. ----
   const looksLikeNumber = c => /^\+?[\d\s().-]{6,}$/.test(c);
   function lookupContacts(ask) {
     if (!native || !native.lookupContacts || isExample) return;
-    const numbers = [...new Set(messages.map(m => m.contact))].filter(looksLikeNumber);
-    if (!numbers.length) return;
+    const all = [...new Set([...messages.map(m => m.contact), ...numbers.keys()])].filter(looksLikeNumber);
+    if (!all.length) return;
     let asked = false;
     try { asked = localStorage.getItem('tof-contacts-asked') === '1'; localStorage.setItem('tof-contacts-asked', '1'); } catch (e) {}
-    native.lookupContacts(JSON.stringify(numbers), ask || !asked);
+    native.lookupContacts(JSON.stringify(all), ask || !asked);
   }
   window.__tofContacts = (names, state) => {
     contactsState = state;
     Object.assign(phoneNames, names || {});
-    if (state === 'denied') setStatus("Tof can't read your contacts. To show their names, allow Contacts for Tof in Settings > Apps > Tof > Permissions.", true);
-    renderStats(); renderContacts(); renderReader();
+    if (state === 'denied') setStatus("Tof can't read your contacts. To see suggestions from them, allow Contacts for Tof in Settings > Apps > Tof > Permissions.", true);
+    renderContacts(); renderReader();
   };
 
   // ---- Rendering ----
-  function contactList() {
-    const contacts = new Map();
+  function numStats() {
+    const out = new Map();
     messages.forEach(m => {
-      const c = contacts.get(m.contact) || { name: m.contact, total: 0, you: 0, them: 0, last: m.when };
-      c.total++; m.you ? c.you++ : c.them++; if (m.when > c.last) c.last = m.when;
-      contacts.set(m.contact, c);
+      const c = out.get(m.contact) || { n: m.contact, total: 0, last: m.when };
+      c.total++; if (m.when > c.last) c.last = m.when;
+      out.set(m.contact, c);
     });
-    return [...contacts.values()].sort((a, b) => b.last - a.last);
+    return out;
+  }
+  // The list: contacts (with all their numbers' messages) plus numbers that don't have a contact yet.
+  function entries() {
+    const stats = numStats();
+    const ppl = [...people.values()].map(p => {
+      const ns = numbersOf(p.id), e = { key: 'p:' + p.id, id: p.id, numbers: ns, total: 0, last: null };
+      ns.forEach(n => { const s = stats.get(n); if (s) { e.total += s.total; if (!e.last || s.last > e.last) e.last = s.last; } });
+      return e;
+    }).sort((a, b) => (b.last || 0) - (a.last || 0) || nameOf(a.id).localeCompare(nameOf(b.id)));
+    const loose = [...stats.values()].filter(s => !personOf(s.n)).sort((a, b) => b.last - a.last)
+      .map(s => ({ key: 'n:' + s.n, n: s.n, numbers: [s.n], total: s.total, last: s.last }));
+    return { ppl, loose };
   }
 
   function render() {
     $('example').hidden = !isExample;
+    $('newperson').disabled = isExample;
     renderContacts();
     renderStats();
     renderReader();
@@ -222,7 +261,8 @@
 
   function renderStats() {
     const total = messages.length, sent = messages.filter(m => m.you).length;
-    const list = contactList().sort((a, b) => b.total - a.total);
+    const { ppl, loose } = entries();
+    const all = [...ppl.filter(e => e.total), ...loose].sort((a, b) => b.total - a.total);
     const times = messages.map(m => m.when.getTime());
     const first = total ? new Date(Math.min(...times)) : null, last = total ? new Date(Math.max(...times)) : null;
     const spanDays = total ? Math.max(1, Math.round((last - first) / 864e5) + 1) : 0;
@@ -230,75 +270,84 @@
       ['Messages', fmt.format(total), total ? `over ${fmt.format(spanDays)} day${spanDays === 1 ? '' : 's'}` : 'none yet'],
       ['Sent by you', fmt.format(sent), total ? `${Math.round(sent / total * 100)}% of all` : '—'],
       ['Received', fmt.format(total - sent), total ? `${Math.round((total - sent) / total * 100)}% of all` : '—'],
-      ['Contacts', fmt.format(new Set(list.map(c => groupKey(c.name))).size), list[0] ? `most: ${esc(displayName(list[0].name))}` : '—'],
+      ['Contacts', fmt.format(all.length), all[0] ? `most: ${esc(all[0].id ? nameOf(all[0].id) : all[0].n)}` : '—'],
       ['Per day', total ? (total / spanDays).toFixed(1) : '—', first ? `${dayFmt.format(first)} to ${dayFmt.format(last)}` : '—'],
     ].map(([k, v, n]) => `<div class="stat"><span class="k">${k}</span><span class="v">${v}</span><span class="n">${n}</span></div>`).join('');
     if (!$('view-stats').hidden) { drawDaily(); drawHours(); }
   }
 
-  function matches(c) {
+  function matches(e) {
     if (!query) return true;
-    const r = rec(c);
-    const hay = [c, phoneNames[c] || '', ...Object.values(r.fields || {}).flat()].join(' ').toLowerCase();
+    const hay = [...e.numbers.flatMap(n => [n, num(n).label || '', phoneNames[n] || '']), ...(e.id ? Object.values(fieldsOf(e.id)).flat() : [])].join(' ').toLowerCase();
     return query.toLowerCase().split(/\s+/).every(w => hay.includes(w));
   }
 
-  // Numbers are grouped by the contact name they show, from the record or the phone's contacts.
-  const groupKey = c => displayName(c).toLowerCase();
-  const linksOf = c => (rec(c).fields || {}).links || [];
   const normLink = u => { u = (u || '').trim(); return !u ? '' : /^[a-z][a-z0-9+.-]*:/i.test(u) ? u : 'https://' + u; };
 
   function renderContacts() {
-    const list = contactList();
-    const shown = list.filter(c => matches(c.name));
-    const max = Math.max(1, ...list.map(c => c.total));
-    if (!selected && list[0]) selected = list[0].name;
-    $('usecontacts').hidden = !native || isExample || contactsState === 'granted' || !list.some(c => looksLikeNumber(c.name));
-    // Conversations whose numbers belong to the same contact sit together under one heading.
-    const groups = new Map();
-    shown.forEach(c => { const g = groupKey(c.name); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(c); });
-    const row = (c, inGroup) => {
-      const name = displayName(c.name), tags = tagsOf(c.name);
-      const title = inGroup ? c.name : name;
-      return `<tr tabindex="0" data-c="${esc(c.name)}" class="${c.name === selected ? 'sel' : ''}${inGroup ? ' sub' : ''}"><td><div class="who"><b>${esc(title)}</b>${!inGroup && name !== c.name ? `<small>${esc(c.name)}</small>` : ''}${tags.length ? `<span class="chips">${tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</span>` : ''}</div></td><td class="num">${fmt.format(c.total)}<span class="bar" style="width:${Math.max(2, c.total / max * 50)}px"></span></td><td class="num">${dayFmt.format(c.last)}</td></tr>`;
-    };
-    $('contacts').innerHTML = shown.length ? [...groups.values()].map(g => g.length < 2 ? row(g[0], false)
-      : `<tr class="grp"><td colspan="3"><b>${esc(displayName(g[0].name))}</b> <small>${g.length} numbers · ${fmt.format(g.reduce((n, c) => n + c.total, 0))} messages</small></td></tr>` + g.map(c => row(c, true)).join('')
-    ).join('') : `<tr><td colspan="3" class="empty">${list.length ? 'No conversations match.' : 'No messages yet.'}</td></tr>`;
+    const { ppl, loose } = entries();
+    const all = [...loose, ...ppl];
+    if ((!sel || !all.some(e => e.key === sel)) && all[0]) { sel = (ppl[0] || all[0]).key; only = ''; }
+    const max = Math.max(1, ...all.map(e => e.total));
+    $('usecontacts').hidden = !native || isExample || contactsState === 'granted' || !all.length;
+    const cells = e => `<td class="num">${e.total ? fmt.format(e.total) : '—'}<span class="bar" style="width:${e.total ? Math.max(2, e.total / max * 50) : 0}px"></span></td><td class="num">${e.last ? dayFmt.format(e.last) : '—'}</td>`;
+    const looseRows = loose.filter(matches).map(e => `<tr tabindex="0" data-k="${esc(e.key)}" class="sub${e.key === sel ? ' sel' : ''}"><td><div class="who"><b>${esc(e.n)}</b>${phoneNames[e.n] ? `<small>Phone contacts: ${esc(phoneNames[e.n])}</small>` : '<small>No contact yet</small>'}</div></td>${cells(e)}</tr>`).join('');
+    const pplRows = ppl.filter(matches).map(e => {
+      const tags = tagsOf(e.id);
+      return `<tr tabindex="0" data-k="${esc(e.key)}" class="${e.key === sel ? 'sel' : ''}"><td><div class="who"><b>${esc(nameOf(e.id))}</b><small>${e.numbers.length ? esc(e.numbers.map(numLabel).join(' · ')) : 'No numbers yet'}</small>${tags.length ? `<span class="chips">${tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</span>` : ''}</div></td>${cells(e)}</tr>`;
+    }).join('');
+    $('contacts').innerHTML = (looseRows ? `<tr class="grp"><td colspan="3"><b>New numbers</b> <small>Choose a contact for each</small></td></tr>${looseRows}${pplRows ? '<tr class="grp"><td colspan="3"><b>Contacts</b></td></tr>' : ''}` : '') + pplRows
+      || `<tr><td colspan="3" class="empty">${all.length ? 'Nothing matches.' : 'No contacts yet.'}</td></tr>`;
   }
 
-  function renderRecord(msgs) {
-    const form = $('record');
-    if (!selected) { form.hidden = true; return; }
-    const r = rec(selected), f = r.fields || {};
+  function mediaLine(msgs) {
     const urls = [...new Set(msgs.flatMap(urlsOf))];
-    const saved = urls.filter(u => (mediaIdx.get(u) || {}).status === 'saved').length;
-    const notMedia = urls.filter(u => (mediaIdx.get(u) || {}).status === 'notmedia').length;
-    const gone = urls.filter(u => (mediaIdx.get(u) || {}).status === 'gone').length;
-    const mediaLine = !urls.length ? 'No pictures or videos.'
-      : native ? `Pictures and videos saved on this phone: ${saved} of ${urls.length - notMedia}${pendingMedia.size ? ' (saving…)' : ''}.${gone ? ` ${gone} had already expired at TextNow.` : ''}`
-      : `${urls.length} picture or video link${urls.length === 1 ? '' : 's'}. Saving them needs the Android app.`;
-    const dis = isExample ? ' disabled' : '';
-    const links = f.links || [];
-    const others = contactList().map(c => c.name).filter(c => c !== selected && groupKey(c) === groupKey(selected));
-    const names = [...new Set(contactList().map(c => displayName(c.name)).filter(n => !looksLikeNumber(n)))].sort();
-    form.innerHTML = `
-      <label for="f-name">Contact<input id="f-name" data-f="name" list="contactnames" autocomplete="off" value="${esc(f.name || '')}" placeholder="${esc(phoneNames[selected] || selected)}"${dis}></label>
-      <datalist id="contactnames">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
-      <p class="hint">${others.length ? `Same contact: ${others.map(o => `<button type="button" class="chip goto" data-goto="${esc(o)}">${esc(o)}</button>`).join(' ')}` : 'Give another number the same contact name to keep them together.'}</p>
-      <div class="links"><span class="lbl">Links</span>
-        ${links.map((u, i) => `<div class="linkrow"><input data-link="${i}" value="${esc(u)}" aria-label="Link ${i + 1}" inputmode="url"${dis}><button type="button" class="btn" data-open="${i}">Open</button><button type="button" class="btn" data-copy="${i}">Copy</button><button type="button" class="x" data-unlink="${i}" aria-label="Remove link ${i + 1}"${dis}>×</button></div>`).join('')}
-        <div class="add"><input id="newlink" placeholder="Paste a link" aria-label="New link" inputmode="url"${dis}><button type="button" class="btn" id="addlink"${dis}>Add link</button></div>
-      </div>
-      <label for="f-tags">Tags<input id="f-tags" data-f="tags" value="${esc(f.tags || '')}" placeholder="Comma separated, like work, family"${dis}></label>
-      ${fieldDefs.map(d => `<div class="row"><label for="f-${esc(d.id)}">${esc(d.label)}<input id="f-${esc(d.id)}" data-f="${esc(d.id)}" value="${esc(f[d.id] || '')}"${dis}></label><button type="button" class="x" data-remove="${esc(d.id)}" aria-label="Remove field ${esc(d.label)}"${dis}>×</button></div>`).join('')}
-      <label for="f-notes">Notes<textarea id="f-notes" data-f="notes"${dis}>${esc(f.notes || '')}</textarea></label>
-      <div class="add"><input id="newfield" placeholder="New field, like Company or Case number" aria-label="New field name"${dis}><button type="button" class="btn" id="addfield"${dis}>Add field</button></div>
-      <p class="meta">${isExample ? 'Add your own exports to start keeping records.' : (phoneNames[selected] ? `Saved in your contacts as ${esc(phoneNames[selected])}. ` : '') + esc(mediaLine) + (r.updated ? ` Record updated ${esc(fullFmt.format(new Date(r.updated)))}.` : '')}</p>`;
-    form.hidden = false;
+    const st = s => urls.filter(u => (mediaIdx.get(u) || {}).status === s).length;
+    if (!urls.length) return 'No pictures or videos.';
+    if (!native) return `${urls.length} picture or video link${urls.length === 1 ? '' : 's'}. Saving them needs the Android app.`;
+    return `Pictures and videos saved on this phone: ${st('saved')} of ${urls.length - st('notmedia')}${pendingMedia.size ? ' (saving…)' : ''}.${st('gone') ? ` ${st('gone')} had already expired at TextNow.` : ''}`;
+  }
+  const dis = () => isExample ? ' disabled' : '';
+  const byName = () => [...people.values()].map(p => p.id).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+
+  // A number with no contact yet: Bob picks the contact (phone contacts only suggest one).
+  function renderAssign(n, msgs) {
+    const hint = phoneNames[n] || '';
+    const match = hint && byName().find(id => nameOf(id).toLowerCase() === hint.toLowerCase());
+    $('record').innerHTML = `
+      <p class="hint">${hint ? `Your phone contacts have this number as <b>${esc(hint)}</b>.` : 'Which contact does this number belong to?'}</p>
+      ${people.size ? `<div class="add"><select id="a-pick" aria-label="Contact"${dis()}><option value="">Choose a contact…</option>${byName().map(id => `<option value="${esc(id)}"${id === match ? ' selected' : ''}>${esc(nameOf(id))}</option>`).join('')}</select><button type="button" class="btn solid" id="a-add"${dis()}>Add to contact</button></div>` : ''}
+      <div class="add"><input id="a-new" placeholder="New contact name" aria-label="New contact name" value="${esc(match ? '' : hint)}"${dis()}><button type="button" class="btn${people.size ? '' : ' solid'}" id="a-create"${dis()}>Create contact</button></div>
+      <p class="meta">${esc(mediaLine(msgs))}</p>`;
   }
 
-  // Stats scoped to the open conversation.
+  // A contact gets the offer once it has a number, while none of its numbers are in the phone's contacts.
+  // With Contacts access turned off Tof can't tell, so it offers anyway.
+  const offerSave = (id, ns) => !!(native && native.saveContact) && !isExample && ns.length > 0 && !ns.some(n => phoneNames[n]);
+  let savedOffer = false;
+
+  function renderPerson(id, msgs) {
+    const f = fieldsOf(id), p = people.get(id), ns = numbersOf(id), name = (f.name || '').trim();
+    $('record').innerHTML = `
+      <label for="f-name">Name<input id="f-name" data-f="name" value="${esc(f.name || '')}" placeholder="Contact name"${dis()}></label>
+      <div class="group"><span class="lbl">Numbers</span>
+        ${ns.map(n => `<div class="numrow"><span class="n">${esc(n)}</span><input data-label="${esc(n)}" value="${esc(num(n).label || '')}" placeholder="Label, like work" aria-label="Label for ${esc(n)}"${dis()}><button type="button" class="x" data-detach="${esc(n)}" aria-label="Remove ${esc(n)} from this contact"${dis()}>×</button></div>${phoneNames[n] && phoneNames[n].toLowerCase() !== name.toLowerCase() ? `<small class="hint">Phone contacts: ${esc(phoneNames[n])}${name ? '' : ` <button type="button" class="chip goto" data-usename="${esc(phoneNames[n])}"${dis()}>Use this name</button>`}</small>` : ''}`).join('')}
+        <div class="add"><input id="newnum" placeholder="Add a number" aria-label="Add a number" inputmode="tel"${dis()}><button type="button" class="btn" id="addnum"${dis()}>Add number</button></div>
+      </div>
+      ${offerSave(id, ns) ? `<p class="offer">${name ? esc(name) : 'This contact'} isn't in your phone's contacts. <button type="button" class="btn" id="savephone"${dis()}>Save to phone contacts</button></p>` : ''}
+      <div class="group"><span class="lbl">Links</span>
+        ${linksOf(id).map((u, i) => `<div class="linkrow"><input data-link="${i}" value="${esc(u)}" aria-label="Link ${i + 1}" inputmode="url"${dis()}><button type="button" class="btn" data-open="${i}">Open</button><button type="button" class="btn" data-copy="${i}">Copy</button><button type="button" class="x" data-unlink="${i}" aria-label="Remove link ${i + 1}"${dis()}>×</button></div>`).join('')}
+        <div class="add"><input id="newlink" placeholder="Paste a link" aria-label="New link" inputmode="url"${dis()}><button type="button" class="btn" id="addlink"${dis()}>Add link</button></div>
+      </div>
+      <label for="f-tags">Tags<input id="f-tags" data-f="tags" value="${esc(f.tags || '')}" placeholder="Comma separated, like work, family"${dis()}></label>
+      ${fieldDefs.map(d => `<div class="row"><label for="f-${esc(d.id)}">${esc(d.label)}<input id="f-${esc(d.id)}" data-f="${esc(d.id)}" value="${esc(f[d.id] || '')}"${dis()}></label><button type="button" class="x" data-remove="${esc(d.id)}" aria-label="Remove field ${esc(d.label)}"${dis()}>×</button></div>`).join('')}
+      <label for="f-notes">Notes<textarea id="f-notes" data-f="notes"${dis()}>${esc(f.notes || '')}</textarea></label>
+      <div class="add"><input id="newfield" placeholder="New field, like Company or Case number" aria-label="New field name"${dis()}><button type="button" class="btn" id="addfield"${dis()}>Add field</button></div>
+      <p class="meta">${isExample ? 'Add your own exports in Settings to start keeping records.' : esc(mediaLine(msgs)) + (p.updated ? ` Record updated ${esc(fullFmt.format(new Date(p.updated)))}.` : '')}</p>
+      <div><button type="button" class="btn quiet" id="delperson"${dis()}>Delete contact</button></div>`;
+  }
+
+  // Stats scoped to the open contact.
   const dur = ms => ms < 36e5 ? `${Math.max(1, Math.round(ms / 6e4))} min` : ms < 864e5 ? `${(ms / 36e5).toFixed(1)} h` : `${(ms / 864e5).toFixed(1)} d`;
   const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y), h = s.length >> 1; return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2; };
   function renderConvoStats(msgs) {
@@ -336,43 +385,91 @@
     drawHours($('chours'), msgs);
   }
 
+  function scope() {
+    if (!sel) return { ns: [], msgs: [] };
+    const id = openId(), ns = id ? numbersOf(id) : [sel.slice(2)];
+    if (only && !ns.includes(only)) only = '';
+    const set = new Set(only ? [only] : ns);
+    return { id, ns, msgs: messages.filter(m => set.has(m.contact)).sort((a, b) => a.when - b.when) };
+  }
+
   function renderReader() {
-    const msgs = messages.filter(m => m.contact === selected).sort((a, b) => a.when - b.when);
-    $('readertitle').textContent = selected ? displayName(selected) : 'Conversation';
-    $('readersub').textContent = selected ? `${displayName(selected) !== selected ? selected + ' · ' : ''}${fmt.format(msgs.length)} message${msgs.length === 1 ? '' : 's'}, oldest first.` : 'Select a conversation.';
+    const { id, ns, msgs } = scope();
+    const title = !sel ? 'Contact' : id ? nameOf(id) : sel.slice(2);
+    $('readertitle').textContent = title;
+    $('readersub').textContent = !sel ? 'Select a contact.'
+      : !id ? `New number · ${fmt.format(msgs.length)} message${msgs.length === 1 ? '' : 's'}.`
+      : `${ns.length} number${ns.length === 1 ? '' : 's'} · ${fmt.format(msgs.length)} message${msgs.length === 1 ? '' : 's'}${only ? ` with ${only}` : ''}, oldest first.`;
     const active = document.activeElement && $('record').contains(document.activeElement) ? document.activeElement.id : null;
-    renderRecord(msgs);
+    $('record').hidden = !sel;
+    if (sel) id ? renderPerson(id, msgs) : renderAssign(sel.slice(2), msgs);
     if (active && $(active)) $(active).focus();
+    $('cstats').querySelector('summary').textContent = id ? 'Stats for this contact' : 'Stats for this number';
     renderConvoStats(msgs);
-    $('reader').innerHTML = msgs.map(m => `<div class="msg ${m.you ? 'you' : 'them'}">${bodyHtml(m)}<time>${fullFmt.format(m.when)}</time></div>`).join('');
+    // A contact with several numbers can show all their messages together or one number's at a time.
+    const multi = id && ns.length > 1;
+    $('only').hidden = !multi;
+    $('only').innerHTML = multi ? [['', 'All numbers'], ...ns.map(n => [n, num(n).label || n])].map(([v, t]) => `<button type="button" class="chip pick${v === only ? ' on' : ''}" data-only="${esc(v)}" aria-pressed="${v === only}">${esc(t)}</button>`).join('') : '';
+    const tag = multi && !only;
+    $('reader').innerHTML = msgs.length ? msgs.map(m => `<div class="msg ${m.you ? 'you' : 'them'}">${bodyHtml(m)}<time>${fullFmt.format(m.when)}${tag ? ` · ${esc(num(m.contact).label || m.contact)}` : ''}</time></div>`).join('')
+      : sel ? '<p class="empty">No messages yet. Share a TextNow export for one of these numbers to add them.</p>' : '';
     // A URL that isn't a loadable picture falls back to a plain link.
     $('reader').querySelectorAll('img.pic').forEach(img => img.addEventListener('error', () => {
       const a = img.parentElement; a.classList.add('link'); a.textContent = a.href;
     }, { once: true }));
-    document.querySelectorAll('#contacts tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.c === selected));
+    document.querySelectorAll('#contacts tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.k === sel));
+  }
+  function select(key) { flushSave(); sel = key; only = ''; renderContacts(); renderReader(); }
+
+  // ---- Editing contacts ----
+  const dirty = new Set();
+  let saveTimer;
+  function flushSave() {
+    clearTimeout(saveTimer); saveTimer = null;
+    if (dirty.size) { putAll('people', [...dirty].map(id => people.get(id)).filter(Boolean)); dirty.clear(); }
+  }
+  function touch(id) { const p = people.get(id); if (p) { p.updated = Date.now(); dirty.add(id); } }
+  function updateField(f, value) {
+    const id = openId(); if (isExample || !id) return;
+    const p = people.get(id);
+    p.fields = { ...p.fields, [f]: value };
+    touch(id);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { flushSave(); renderContacts(); if (openId() === id) $('readertitle').textContent = nameOf(id); }, 400);
+  }
+  function setNumber(n, change) {
+    const r = { ...num(n), ...change, updated: Date.now() };
+    numbers.set(n, r); putAll('records', [r]);
+  }
+  function createPerson(name) {
+    const p = { id: newId(), fields: { name: name || '' }, created: Date.now(), updated: Date.now() };
+    people.set(p.id, p); putAll('people', [p]);
+    return p.id;
+  }
+  // Takes a number off its contact. One that has no messages is forgotten; one with messages goes back to New numbers.
+  function detach(n) {
+    if (messages.some(m => m.contact === n)) setNumber(n, { person: null });
+    else { numbers.delete(n); delOne('records', n); }
   }
 
-  // ---- Record editing ----
-  let saveTimer;
-  function flushSave() { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; putAll('records', [...records.values()].filter(r => r.updated)); } }
-  function updateField(f, value) {
-    if (isExample || !selected) return;
-    const r = rec(selected);
-    r.fields = { ...(r.fields || {}), [f]: value };
-    r.updated = Date.now();
-    records.set(selected, r);
-    clearTimeout(saveTimer);
-    const who = selected;
-    saveTimer = setTimeout(() => { putAll('records', [records.get(who)]); renderContacts(); $('readertitle').textContent = displayName(selected); }, 400);
-  }
+  $('newperson').addEventListener('click', () => {
+    if (isExample) return;
+    select('p:' + createPerson(''));
+    showTab('convos');
+    $('f-name').focus();
+  });
+  $('only').addEventListener('click', e => { const v = e.target.dataset.only; if (v != null) { only = v; renderReader(); } });
   $('record').addEventListener('input', e => {
-    const f = e.target.dataset.f; if (f) updateField(f, e.target.value);
-    const i = e.target.dataset.link; if (i != null) { const l = [...linksOf(selected)]; l[+i] = e.target.value; updateField('links', l); }
+    const d = e.target.dataset, id = openId();
+    if (d.f) updateField(d.f, e.target.value);
+    if (d.link != null && id) { const l = [...linksOf(id)]; l[+d.link] = e.target.value; updateField('links', l); }
+    if (d.label != null && !isExample) { setNumber(d.label, { label: e.target.value.trim() }); clearTimeout(saveTimer); saveTimer = setTimeout(() => { flushSave(); renderContacts(); }, 400); }
   });
   $('record').addEventListener('change', e => {
     // Tidy a link once editing is done: add https:// and drop emptied rows.
-    if (e.target.dataset.link == null) return;
-    updateField('links', linksOf(selected).map(normLink).filter(Boolean)); renderReader();
+    const id = openId();
+    if (e.target.dataset.link == null || !id) return;
+    updateField('links', linksOf(id).map(normLink).filter(Boolean)); renderReader();
   });
   function openLink(u) {
     u = normLink(u); if (!u) return;
@@ -382,37 +479,90 @@
     try { await navigator.clipboard.writeText(u); } catch (_) { const t = document.createElement('textarea'); t.value = u; document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); }
     btn.textContent = 'Copied'; setTimeout(() => { if (btn.isConnected) btn.textContent = 'Copy'; }, 1500);
   }
+  // Destructive buttons take a second tap.
+  function armed(btn, label) {
+    if (btn.dataset.armed === '1') return true;
+    const was = btn.textContent; btn.dataset.armed = '1'; btn.textContent = label;
+    setTimeout(() => { if (btn.isConnected) { btn.dataset.armed = ''; btn.textContent = was; } }, 3000);
+    return false;
+  }
   $('record').addEventListener('submit', e => e.preventDefault());
   $('record').addEventListener('click', e => {
-    const d = e.target.dataset || {};
-    if (d.goto != null) { flushSave(); selected = d.goto; renderReader(); $('readertitle').scrollIntoView({ block: 'start' }); return; }
-    if (d.open != null) { openLink(linksOf(selected)[+d.open]); return; }
-    if (d.copy != null) { copyLink(normLink(linksOf(selected)[+d.copy]), e.target); return; }
-    if (d.unlink != null) { updateField('links', linksOf(selected).filter((_, i) => i !== +d.unlink)); renderReader(); return; }
-    if (e.target.id === 'addlink') {
+    const t = e.target, d = t.dataset || {}, id = openId();
+    if (isExample && t.tagName === 'BUTTON' && d.open == null && d.copy == null) return;
+    // Giving a new number a contact.
+    if (t.id === 'a-add' || t.id === 'a-create') {
+      const n = sel.slice(2);
+      let to = t.id === 'a-add' ? $('a-pick').value : '';
+      if (t.id === 'a-add' && !to) { $('a-pick').focus(); return; }
+      if (t.id === 'a-create') { const name = $('a-new').value.trim(); if (!name) { $('a-new').focus(); return; } to = createPerson(name); }
+      setNumber(n, { person: to }); touch(to); flushSave();
+      setStatus(`Added ${n} to ${nameOf(to)}.`);
+      select('p:' + to); renderStats();
+      return;
+    }
+    if (!id) return;
+    if (d.open != null) { openLink(linksOf(id)[+d.open]); return; }
+    if (d.copy != null) { copyLink(normLink(linksOf(id)[+d.copy]), t); return; }
+    if (d.unlink != null) { updateField('links', linksOf(id).filter((_, i) => i !== +d.unlink)); renderReader(); return; }
+    if (d.usename != null) { updateField('name', d.usename); flushSave(); renderContacts(); renderReader(); return; }
+    if (d.detach != null) {
+      detach(d.detach); touch(id); flushSave();
+      setStatus(messages.some(m => m.contact === d.detach) ? `Removed ${d.detach} from ${nameOf(id)}. It's under New numbers now.` : `Removed ${d.detach} from ${nameOf(id)}.`);
+      renderContacts(); renderReader(); renderStats();
+      return;
+    }
+    if (t.id === 'addnum') {
+      const n = normNumber($('newnum').value);
+      if (!n) { $('newnum').focus(); return; }
+      const prev = personOf(n);
+      if (prev === id) { setStatus(`${n} is already on this contact.`); return; }
+      setNumber(n, { person: id }); touch(id); if (prev) touch(prev); flushSave();
+      setStatus(prev ? `Moved ${n} from ${nameOf(prev)} to ${nameOf(id)}.` : `Added ${n}. Exports from this number will go to ${nameOf(id)}.`);
+      renderContacts(); renderReader(); renderStats(); $('newnum').focus();
+      lookupContacts(false);
+      return;
+    }
+    if (t.id === 'savephone') {
+      savedOffer = true;
+      native.saveContact(nameOf(id) === numbersOf(id)[0] ? '' : nameOf(id), JSON.stringify(numbersOf(id)));
+      return;
+    }
+    if (t.id === 'delperson') {
+      if (!armed(t, 'Tap again to delete')) return;
+      const name = nameOf(id);
+      numbersOf(id).forEach(detach);
+      people.delete(id); dirty.delete(id); delOne('people', id);
+      setStatus(`Deleted ${name}. Its messages are kept under New numbers.`);
+      sel = null; render();
+      return;
+    }
+    if (t.id === 'addlink') {
       const u = normLink($('newlink').value);
       if (!u) { $('newlink').focus(); return; }
-      updateField('links', [...linksOf(selected), u]); renderReader(); $('newlink').focus(); return;
+      updateField('links', [...linksOf(id), u]); renderReader(); $('newlink').focus(); return;
     }
-    if (e.target.id === 'addfield') {
+    if (t.id === 'addfield') {
       const label = $('newfield').value.trim();
       if (!label) { $('newfield').focus(); return; }
-      if (fieldDefs.some(d => d.label.toLowerCase() === label.toLowerCase())) { setStatus(`There's already a field called ${label}.`, true); return; }
+      if (fieldDefs.some(f => f.label.toLowerCase() === label.toLowerCase())) { setStatus(`There's already a field called ${label}.`, true); return; }
       fieldDefs.push({ id: 'c' + Date.now().toString(36), label });
       putAll('meta', [{ id: 'fields', list: fieldDefs }]);
       renderReader();
       const last = fieldDefs[fieldDefs.length - 1]; if ($('f-' + last.id)) $('f-' + last.id).focus();
+      return;
     }
-    const rm = e.target.dataset && e.target.dataset.remove;
-    if (rm) {
-      if (e.target.dataset.armed !== '1') { e.target.dataset.armed = '1'; e.target.textContent = 'Remove?'; setTimeout(() => { if (e.target.isConnected) { e.target.dataset.armed = ''; e.target.textContent = '×'; } }, 3000); return; }
-      fieldDefs = fieldDefs.filter(d => d.id !== rm);
+    if (d.remove) {
+      if (!armed(t, 'Remove?')) return;
+      fieldDefs = fieldDefs.filter(f => f.id !== d.remove);
       putAll('meta', [{ id: 'fields', list: fieldDefs }]);
       renderReader();
     }
   });
-  $('record').addEventListener('keydown', e => { if (e.target.id === 'newfield' && e.key === 'Enter') { e.preventDefault(); $('addfield').click(); }
-    if (e.target.id === 'newlink' && e.key === 'Enter') { e.preventDefault(); $('addlink').click(); } });
+  $('record').addEventListener('keydown', e => {
+    const go = { newfield: 'addfield', newlink: 'addlink', newnum: 'addnum', 'a-new': 'a-create' }[e.target.id];
+    if (go && e.key === 'Enter') { e.preventDefault(); $(go).click(); }
+  });
 
   // ---- Charts ----
   function chart(el, bins, labelEvery, labelOf, tipOf) {
@@ -501,17 +651,55 @@
     }
     clearArmed = 0; btn.textContent = 'Clear all';
     await clearAll();
-    await putAll('meta', [{ id: 'localtime', at: Date.now() }]);
+    isExample = false;
+    await putAll('meta', [{ id: 'localtime', at: Date.now() }, { id: 'people', at: Date.now() }]);
     if (native) { try { native.clearMedia(); } catch (e) {} }
-    messages = []; records.clear(); fieldDefs = []; mediaIdx.clear(); isExample = false; selected = null;
-    setStatus('Deleted all conversations, records and saved media.');
+    messages = []; people.clear(); numbers.clear(); dirty.clear(); fieldDefs = []; mediaIdx.clear(); sel = null;
+    setStatus('Deleted all contacts, conversations and saved media.');
     render();
   });
 
-  const pick = tr => { if (tr && tr.dataset.c != null) { flushSave(); selected = tr.dataset.c; renderReader(); } };
+  const pick = tr => { if (tr && tr.dataset.k) select(tr.dataset.k); };
   $('contacts').addEventListener('click', e => pick(e.target.closest('tr')));
   $('contacts').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(e.target.closest('tr')); } });
-  let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!$('view-stats').hidden) { drawDaily(); drawHours(); } else renderConvoStats(messages.filter(m => m.contact === selected).sort((a, b) => a.when - b.when)); }, 120); });
+  let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!$('view-stats').hidden) { drawDaily(); drawHours(); } else renderConvoStats(scope().msgs); }, 120); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) flushSave();
+    // Back from the Contacts app: check again so a contact that was just saved stops being offered.
+    else if (savedOffer) { savedOffer = false; lookupContacts(false); }
+  });
+
+  // Before contacts existed, each number had its own record. Numbers whose records hold anything
+  // become contacts; numbers that share a typed name become one contact. The rest wait under New numbers.
+  function migrateToPeople(recs) {
+    const made = new Map();
+    const has = v => Array.isArray(v) ? v.length > 0 : String(v || '').trim() !== '';
+    recs.forEach(r => {
+      const f = r.fields || {};
+      if (r.person !== undefined || !Object.values(f).some(has)) return;
+      const name = (f.name || '').trim(), k = name ? 'name:' + name.toLowerCase() : 'num:' + r.contact;
+      let p = made.get(k);
+      if (!p) { p = { id: newId(), fields: {}, created: r.updated || Date.now(), updated: r.updated || Date.now() }; made.set(k, p); }
+      Object.entries(f).forEach(([key, v]) => {
+        if (!has(v)) return;
+        const cur = p.fields[key];
+        if (key === 'links') p.fields.links = [...new Set([...(cur || []), ...v])];
+        else if (key === 'tags') p.fields.tags = [...new Set([...(cur || '').split(','), ...String(v).split(',')].map(s => s.trim()).filter(Boolean))].join(', ');
+        else if (!has(cur)) p.fields[key] = typeof v === 'string' ? v.trim() : v;
+        else if (key !== 'name' && String(cur) !== String(v).trim()) p.fields[key] = cur + (key === 'notes' ? '\n\n' : ' / ') + String(v).trim();
+      });
+      r.person = p.id;
+    });
+    return [...made.values()];
+  }
+
+  // Example data: two contacts (one with two numbers) and one number that has no contact yet.
+  function exampleContacts() {
+    const a = { id: 'ex-a', fields: { name: 'Alex Rivera', tags: 'family', links: ['https://example.com'] }, created: 0, updated: 0 };
+    const b = { id: 'ex-b', fields: { name: 'Sam Lee', tags: 'work' }, created: 0, updated: 0 };
+    people.set(a.id, a); people.set(b.id, b);
+    [['+15555550142', 'ex-a', 'mobile'], ['+15555550187', 'ex-a', 'work'], ['+15555550123', 'ex-b', '']].forEach(([n, person, label]) => numbers.set(n, { contact: n, person, label }));
+  }
 
   // Shares that arrive before storage has loaded wait for it.
   let ready;
@@ -521,7 +709,7 @@
   (async function init() {
     db = await openDb();
     if (db && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-    const [stored, recs, media, meta] = await Promise.all([getAll('messages'), getAll('records'), getAll('media'), getAll('meta')]);
+    const [stored, recs, media, meta, ppl] = await Promise.all([getAll('messages'), getAll('records'), getAll('media'), getAll('meta'), getAll('people')]);
     messages = stored.map(fromStored);
     // Messages imported before the time fix were read as UTC; re-read their clock times as local.
     if (messages.length && !meta.some(m => m.id === 'localtime')) {
@@ -529,12 +717,19 @@
       await new Promise(res => { if (!db) return res(); const t = db.transaction('messages', 'readwrite'); t.objectStore('messages').clear(); t.oncomplete = res; t.onerror = res; });
       await putAll('messages', messages.map(toStored));
     }
-    await putAll('meta', [{ id: 'localtime', at: Date.now() }]);
-    recs.forEach(r => records.set(r.contact, r));
+    ppl.forEach(p => people.set(p.id, p));
+    if (!meta.some(m => m.id === 'people')) {
+      const made = migrateToPeople(recs);
+      made.forEach(p => people.set(p.id, p));
+      await putAll('people', made);
+      await putAll('records', recs.filter(r => r.person !== undefined));
+    }
+    await putAll('meta', [{ id: 'localtime', at: Date.now() }, { id: 'people', at: Date.now() }]);
+    recs.forEach(r => numbers.set(r.contact, { contact: r.contact, person: r.person || null, label: r.label || '', updated: r.updated }));
     media.forEach(m => mediaIdx.set(m.url, m));
     const f = meta.find(m => m.id === 'fields'); if (f) fieldDefs = f.list || [];
-    if (!messages.length) { messages = exampleData(); isExample = true; }
-    if (!db) setStatus('This browser is not keeping data, so conversations last until you close Tof.', true);
+    if (!messages.length && !people.size) { messages = exampleData(); isExample = true; exampleContacts(); }
+    if (!db) setStatus('This browser is not keeping data, so contacts last until you close Tof.', true);
     try { { const t = localStorage.getItem('tof-tab'); if (t === 'stats' || t === 'settings') showTab(t); } } catch (e) {}
     render();
     ready();
