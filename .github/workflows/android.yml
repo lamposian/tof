@@ -43,20 +43,25 @@ jobs:
       - name: Build APK
         run: gradle -p android assembleDebug --no-daemon
 
+      # Each build is also published as tof-<version>.apk, so downloads on the phone never clash.
       - name: Publish APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk tof.apk
-          notes="Latest build of Tof from ${GITHUB_SHA::7}. Download tof.apk on your phone and open it to install."
+          version=$(sed -n 's/^ *versionName "\(.*\)"/\1/p' android/app/build.gradle)
+          apk="tof-$version.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$apk"
+          cp "$apk" tof.apk
+          notes="Tof $version, built from ${GITHUB_SHA::7}. On your phone, download $apk and open it to install. tof.apk is always the newest version."
           if gh release view android >/dev/null 2>&1; then
-            gh release upload android tof.apk --clobber
+            gh release upload android "$apk" tof.apk --clobber
             gh release edit android --notes "$notes"
           else
-            gh release create android tof.apk --title "Tof for Android" --notes "$notes" --target "$GITHUB_SHA"
+            gh release create android "$apk" tof.apk --title "Tof for Android" --notes "$notes" --target "$GITHUB_SHA"
           fi
+          echo "APK=$apk" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: tof-apk
-          path: tof.apk
+          path: ${{ env.APK }}
