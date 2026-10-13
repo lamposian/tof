@@ -199,7 +199,7 @@
     contactsState = state;
     Object.assign(phoneNames, names || {});
     if (state === 'denied') setStatus("Tof can't read your contacts. To show their names, allow Contacts for Tof in Settings > Apps > Tof > Permissions.", true);
-    renderContacts(); renderReader();
+    renderStats(); renderContacts(); renderReader();
   };
 
   // ---- Rendering ----
@@ -230,7 +230,7 @@
       ['Messages', fmt.format(total), total ? `over ${fmt.format(spanDays)} day${spanDays === 1 ? '' : 's'}` : 'none yet'],
       ['Sent by you', fmt.format(sent), total ? `${Math.round(sent / total * 100)}% of all` : '—'],
       ['Received', fmt.format(total - sent), total ? `${Math.round((total - sent) / total * 100)}% of all` : '—'],
-      ['Contacts', fmt.format(list.length), list[0] ? `most: ${esc(displayName(list[0].name))}` : '—'],
+      ['Contacts', fmt.format(new Set(list.map(c => groupKey(c.name))).size), list[0] ? `most: ${esc(displayName(list[0].name))}` : '—'],
       ['Per day', total ? (total / spanDays).toFixed(1) : '—', first ? `${dayFmt.format(first)} to ${dayFmt.format(last)}` : '—'],
     ].map(([k, v, n]) => `<div class="stat"><span class="k">${k}</span><span class="v">${v}</span><span class="n">${n}</span></div>`).join('');
     if (!$('view-stats').hidden) { drawDaily(); drawHours(); }
@@ -239,9 +239,14 @@
   function matches(c) {
     if (!query) return true;
     const r = rec(c);
-    const hay = [c, phoneNames[c] || '', ...Object.values(r.fields || {})].join(' ').toLowerCase();
+    const hay = [c, phoneNames[c] || '', ...Object.values(r.fields || {}).flat()].join(' ').toLowerCase();
     return query.toLowerCase().split(/\s+/).every(w => hay.includes(w));
   }
+
+  // Numbers are grouped by the contact name they show, from the record or the phone's contacts.
+  const groupKey = c => displayName(c).toLowerCase();
+  const linksOf = c => (rec(c).fields || {}).links || [];
+  const normLink = u => { u = (u || '').trim(); return !u ? '' : /^[a-z][a-z0-9+.-]*:/i.test(u) ? u : 'https://' + u; };
 
   function renderContacts() {
     const list = contactList();
@@ -249,10 +254,17 @@
     const max = Math.max(1, ...list.map(c => c.total));
     if (!selected && list[0]) selected = list[0].name;
     $('usecontacts').hidden = !native || isExample || contactsState === 'granted' || !list.some(c => looksLikeNumber(c.name));
-    $('contacts').innerHTML = shown.length ? shown.map(c => {
+    // Conversations whose numbers belong to the same contact sit together under one heading.
+    const groups = new Map();
+    shown.forEach(c => { const g = groupKey(c.name); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(c); });
+    const row = (c, inGroup) => {
       const name = displayName(c.name), tags = tagsOf(c.name);
-      return `<tr tabindex="0" data-c="${esc(c.name)}" class="${c.name === selected ? 'sel' : ''}"><td><div class="who"><b>${esc(name)}</b>${name !== c.name ? `<small>${esc(c.name)}</small>` : ''}${tags.length ? `<span class="chips">${tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</span>` : ''}</div></td><td class="num">${fmt.format(c.total)}<span class="bar" style="width:${Math.max(2, c.total / max * 50)}px"></span></td><td class="num">${dayFmt.format(c.last)}</td></tr>`;
-    }).join('') : `<tr><td colspan="3" class="empty">${list.length ? 'No conversations match.' : 'No messages yet.'}</td></tr>`;
+      const title = inGroup ? c.name : name;
+      return `<tr tabindex="0" data-c="${esc(c.name)}" class="${c.name === selected ? 'sel' : ''}${inGroup ? ' sub' : ''}"><td><div class="who"><b>${esc(title)}</b>${!inGroup && name !== c.name ? `<small>${esc(c.name)}</small>` : ''}${tags.length ? `<span class="chips">${tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</span>` : ''}</div></td><td class="num">${fmt.format(c.total)}<span class="bar" style="width:${Math.max(2, c.total / max * 50)}px"></span></td><td class="num">${dayFmt.format(c.last)}</td></tr>`;
+    };
+    $('contacts').innerHTML = shown.length ? [...groups.values()].map(g => g.length < 2 ? row(g[0], false)
+      : `<tr class="grp"><td colspan="3"><b>${esc(displayName(g[0].name))}</b> <small>${g.length} numbers · ${fmt.format(g.reduce((n, c) => n + c.total, 0))} messages</small></td></tr>` + g.map(c => row(c, true)).join('')
+    ).join('') : `<tr><td colspan="3" class="empty">${list.length ? 'No conversations match.' : 'No messages yet.'}</td></tr>`;
   }
 
   function renderRecord(msgs) {
@@ -267,8 +279,17 @@
       : native ? `Pictures and videos saved on this phone: ${saved} of ${urls.length - notMedia}${pendingMedia.size ? ' (saving…)' : ''}.${gone ? ` ${gone} had already expired at TextNow.` : ''}`
       : `${urls.length} picture or video link${urls.length === 1 ? '' : 's'}. Saving them needs the Android app.`;
     const dis = isExample ? ' disabled' : '';
+    const links = f.links || [];
+    const others = contactList().map(c => c.name).filter(c => c !== selected && groupKey(c) === groupKey(selected));
+    const names = [...new Set(contactList().map(c => displayName(c.name)).filter(n => !looksLikeNumber(n)))].sort();
     form.innerHTML = `
-      <label for="f-name">Name<input id="f-name" data-f="name" value="${esc(f.name || '')}" placeholder="${esc(phoneNames[selected] || selected)}"${dis}></label>
+      <label for="f-name">Contact<input id="f-name" data-f="name" list="contactnames" autocomplete="off" value="${esc(f.name || '')}" placeholder="${esc(phoneNames[selected] || selected)}"${dis}></label>
+      <datalist id="contactnames">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <p class="hint">${others.length ? `Same contact: ${others.map(o => `<button type="button" class="chip goto" data-goto="${esc(o)}">${esc(o)}</button>`).join(' ')}` : 'Give another number the same contact name to keep them together.'}</p>
+      <div class="links"><span class="lbl">Links</span>
+        ${links.map((u, i) => `<div class="linkrow"><input data-link="${i}" value="${esc(u)}" aria-label="Link ${i + 1}" inputmode="url"${dis}><button type="button" class="btn" data-open="${i}">Open</button><button type="button" class="btn" data-copy="${i}">Copy</button><button type="button" class="x" data-unlink="${i}" aria-label="Remove link ${i + 1}"${dis}>×</button></div>`).join('')}
+        <div class="add"><input id="newlink" placeholder="Paste a link" aria-label="New link" inputmode="url"${dis}><button type="button" class="btn" id="addlink"${dis}>Add link</button></div>
+      </div>
       <label for="f-tags">Tags<input id="f-tags" data-f="tags" value="${esc(f.tags || '')}" placeholder="Comma separated, like work, family"${dis}></label>
       ${fieldDefs.map(d => `<div class="row"><label for="f-${esc(d.id)}">${esc(d.label)}<input id="f-${esc(d.id)}" data-f="${esc(d.id)}" value="${esc(f[d.id] || '')}"${dis}></label><button type="button" class="x" data-remove="${esc(d.id)}" aria-label="Remove field ${esc(d.label)}"${dis}>×</button></div>`).join('')}
       <label for="f-notes">Notes<textarea id="f-notes" data-f="notes"${dis}>${esc(f.notes || '')}</textarea></label>
@@ -333,6 +354,7 @@
 
   // ---- Record editing ----
   let saveTimer;
+  function flushSave() { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; putAll('records', [...records.values()].filter(r => r.updated)); } }
   function updateField(f, value) {
     if (isExample || !selected) return;
     const r = rec(selected);
@@ -340,11 +362,38 @@
     r.updated = Date.now();
     records.set(selected, r);
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { putAll('records', [records.get(selected)]); renderContacts(); $('readertitle').textContent = displayName(selected); }, 400);
+    const who = selected;
+    saveTimer = setTimeout(() => { putAll('records', [records.get(who)]); renderContacts(); $('readertitle').textContent = displayName(selected); }, 400);
   }
-  $('record').addEventListener('input', e => { const f = e.target.dataset.f; if (f) updateField(f, e.target.value); });
+  $('record').addEventListener('input', e => {
+    const f = e.target.dataset.f; if (f) updateField(f, e.target.value);
+    const i = e.target.dataset.link; if (i != null) { const l = [...linksOf(selected)]; l[+i] = e.target.value; updateField('links', l); }
+  });
+  $('record').addEventListener('change', e => {
+    // Tidy a link once editing is done: add https:// and drop emptied rows.
+    if (e.target.dataset.link == null) return;
+    updateField('links', linksOf(selected).map(normLink).filter(Boolean)); renderReader();
+  });
+  function openLink(u) {
+    u = normLink(u); if (!u) return;
+    if (native && native.openPrivate) native.openPrivate(u); else window.open(u, '_blank', 'noopener');
+  }
+  async function copyLink(u, btn) {
+    try { await navigator.clipboard.writeText(u); } catch (_) { const t = document.createElement('textarea'); t.value = u; document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); }
+    btn.textContent = 'Copied'; setTimeout(() => { if (btn.isConnected) btn.textContent = 'Copy'; }, 1500);
+  }
   $('record').addEventListener('submit', e => e.preventDefault());
   $('record').addEventListener('click', e => {
+    const d = e.target.dataset || {};
+    if (d.goto != null) { flushSave(); selected = d.goto; renderReader(); $('readertitle').scrollIntoView({ block: 'start' }); return; }
+    if (d.open != null) { openLink(linksOf(selected)[+d.open]); return; }
+    if (d.copy != null) { copyLink(normLink(linksOf(selected)[+d.copy]), e.target); return; }
+    if (d.unlink != null) { updateField('links', linksOf(selected).filter((_, i) => i !== +d.unlink)); renderReader(); return; }
+    if (e.target.id === 'addlink') {
+      const u = normLink($('newlink').value);
+      if (!u) { $('newlink').focus(); return; }
+      updateField('links', [...linksOf(selected), u]); renderReader(); $('newlink').focus(); return;
+    }
     if (e.target.id === 'addfield') {
       const label = $('newfield').value.trim();
       if (!label) { $('newfield').focus(); return; }
@@ -362,7 +411,8 @@
       renderReader();
     }
   });
-  $('record').addEventListener('keydown', e => { if (e.target.id === 'newfield' && e.key === 'Enter') { e.preventDefault(); $('addfield').click(); } });
+  $('record').addEventListener('keydown', e => { if (e.target.id === 'newfield' && e.key === 'Enter') { e.preventDefault(); $('addfield').click(); }
+    if (e.target.id === 'newlink' && e.key === 'Enter') { e.preventDefault(); $('addlink').click(); } });
 
   // ---- Charts ----
   function chart(el, bins, labelEvery, labelOf, tipOf) {
@@ -457,7 +507,7 @@
     render();
   });
 
-  const pick = tr => { if (tr && tr.dataset.c != null) { selected = tr.dataset.c; renderReader(); } };
+  const pick = tr => { if (tr && tr.dataset.c != null) { flushSave(); selected = tr.dataset.c; renderReader(); } };
   $('contacts').addEventListener('click', e => pick(e.target.closest('tr')));
   $('contacts').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(e.target.closest('tr')); } });
   let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!$('view-stats').hidden) { drawDaily(); drawHours(); } else renderConvoStats(messages.filter(m => m.contact === selected).sort((a, b) => a.when - b.when)); }, 120); });

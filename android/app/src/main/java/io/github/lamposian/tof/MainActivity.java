@@ -196,6 +196,31 @@ public class MainActivity extends Activity {
             });
         }
 
+        /**
+         * Opens a link in Chrome without history or cookies: an ephemeral Custom Tab, plus the
+         * Incognito extra that Chrome honours where it allows it. Falls back to any browser.
+         */
+        @JavascriptInterface
+        public void openPrivate(String url) {
+            if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                Bundle b = new Bundle();
+                b.putBinder("android.support.customtabs.extra.SESSION", null);
+                i.putExtras(b);
+                i.putExtra("androidx.browser.customtabs.extra.ENABLE_EPHEMERAL_BROWSING", true);
+                i.putExtra("com.google.android.apps.chrome.EXTRA_OPEN_NEW_INCOGNITO_TAB", true);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                i.setPackage("com.android.chrome");
+                try {
+                    startActivity(i);
+                } catch (ActivityNotFoundException e) {
+                    i.setPackage(null);
+                    try { startActivity(i); } catch (ActivityNotFoundException ignored) { }
+                }
+            });
+        }
+
         @JavascriptInterface
         public void clearMedia() {
             File[] files = mediaDir.listFiles();
